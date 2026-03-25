@@ -14,105 +14,174 @@
   ██████  ██       ██████  ██████  ██████  ███████
 ```
 
-**Offensive Recon Framework — 100% local, zero external APIs**
+**v1.3.1 · by GhostOpcode · Python Recon Framework**
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Kali-green)
-![License](https://img.shields.io/badge/License-MIT-yellow)
+![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Kali-brightgreen?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.3.1-orange?style=flat-square)
+
+> Framework de reconhecimento ofensivo — 100% local, zero APIs externas (exceto CVE lookup opcional)
 
 </div>
 
 ---
 
-## Features
+## O que é o GhostOpcode?
 
-| Module | Description |
-|--------|-------------|
-| DNS Recon | A/MX/NS/TXT/SOA records + zone transfer (AXFR) attempt |
-| Subdomain Enum | Wordlist bruteforce + wildcard detection + takeover check |
-| WHOIS | Domain/IP registration + HTTP fingerprint + SSL analysis |
-| Port Scan | TCP connect scan + banner grabbing + OS inference |
-| Dir Enum | Path bruteforce (Fast/Normal/Full) + catchall detection |
-| Harvester | PDF/DOC/XLS files + email extraction + config leak scanner |
-| HTTP Methods | OPTIONS/PUT/DELETE/TRACE probe + security headers audit |
-| JS Recon | Endpoints + hardcoded secrets + source map detection |
-| Hash Module | Hash identification + local crack + hashcat integration |
-| ARP Scan | LAN host discovery + vendor/hostname identification |
-| Packet Sniffer | Live traffic capture + protocol analysis |
+GhostOpcode é uma ferramenta de **reconhecimento ofensivo** (recon)
+desenvolvida para pentesters, estudantes de segurança e entusiastas de CTF.
 
-- Interactive CLI menu — no arguments needed
-- Automatic JSON + HTML + LOG report generation
-- 100% local — zero external APIs, zero internet dependency
-- Kali Linux wordlists auto-detected
+Ela automatiza a fase de coleta de informações antes de um pentest,
+reunindo em uma única interface interativa tudo que você precisa saber
+sobre um alvo — domínio, IP ou rede local.
+
+**Não requer argumentos** — basta rodar e seguir o menu interativo.
 
 ---
 
-## Requirements
+## Funcionalidades
 
-- Python 3.10+
-- Linux (Kali recommended)
-- Root/sudo for ARP scan and packet sniffer
+| # | Módulo | O que faz |
+|---|--------|-----------|
+| 1 | **DNS Recon** | Consulta registros A, MX, NS, TXT, SOA. Tenta zone transfer (AXFR). Detecta tecnologias via DNS. |
+| 2 | **Subdomain Enum** | Descobre subdomínios via wordlist + bruteforce. Detecta wildcard DNS e candidatos a subdomain takeover. |
+| 3 | **WHOIS + Fingerprint** | Dados de registro do domínio/IP. Detecta web server, CMS, CDN, linguagem backend via headers HTTP. Audita certificado SSL. |
+| 4 | **Port Scan** | Varredura TCP de portas (qualquer range). Identificação precisa de serviços via nmap -sV. Banner grabbing. Inferência de SO. |
+| 5 | **Dir Enum** | Bruteforce de diretórios e arquivos (Fast/Normal/Full). Detecta catchall HTTP. Categoriza findings por risco. |
+| 6 | **Harvester** | Rastreia o site e baixa PDFs, DOCs, XLS. Extrai emails, nomes, perfis LinkedIn. Escaneia arquivos sensíveis expostos (.env, .git, backups). Extrai metadata de documentos. |
+| 7 | **HTTP Methods** | Testa métodos HTTP perigosos (PUT, DELETE, TRACE). Detecta CORS misconfiguration. Audita security headers. |
+| 8 | **JS Recon** | Analisa arquivos JavaScript do alvo. Extrai endpoints de API hardcoded, secrets (AWS keys, tokens), e source maps expostos. |
+| 9 | **Hash Module** | Identifica o algoritmo de um hash. Tenta quebrar via wordlist local (rockyou). Integra com hashcat se disponível. |
+| A | **ARP Scan** | Descobre hosts ativos em rede local via ARP. Identifica fabricante pelo MAC address. Requer CIDR como alvo e root/sudo. |
+| S | **Packet Sniffer** | Captura tráfego de rede em tempo real. Analisa protocolos e extrai inteligência passiva. Requer root/sudo. |
+| ★ | **CVE Lookup** | Roda automaticamente após port scan. Consulta a NVD (National Vulnerability Database) com os serviços e versões encontrados. Retorna CVEs relevantes com CVSS score. |
 
-### System dependencies (Kali Linux)
+---
 
-```bash
-sudo apt install seclists wordlists nmap hashcat
+## Relatórios automáticos
+
+Ao final de cada sessão, o GhostOpcode gera **3 arquivos automaticamente**:
+
+```
+output/
+└── alvo_20260325_143022/
+    ├── report.json     # Dados completos estruturados
+    ├── report.html     # Relatório visual (abrir no browser)
+    └── session.log     # Log cronológico da sessão
 ```
 
 ---
 
-## Installation
+## Requisitos
+
+- **Python 3.10+**
+- **Linux** (Kali Linux recomendado)
+- **nmap** instalado no sistema
+- **Root/sudo** apenas para ARP scan e packet sniffer
+
+---
+
+## Instalação
+
+### 1. Clonar o repositório
 
 ```bash
-# Clone the repository
 git clone https://github.com/JuanTrentinTelli/ghostopcode.git
 cd ghostopcode
+```
 
-# Install Python dependencies
+### 2. Instalar dependências Python
+
+```bash
 pip install -r requirements.txt
 ```
 
----
-
-## Usage
+### 3. Instalar wordlists (Kali Linux)
 
 ```bash
-# Standard usage — interactive menu
+sudo apt install seclists wordlists
+```
+
+O GhostOpcode detecta automaticamente as wordlists do Kali.
+Se estiver em outra distro, veja a seção [Wordlists](#wordlists).
+
+### 4. Instalar nmap
+
+```bash
+sudo apt install nmap
+```
+
+### 5. (Opcional) Configurar CVE lookup
+
+```bash
+# Criar arquivo .env na raiz do projeto
+echo "NVD_API_KEY=sua-chave-aqui" > .env
+```
+
+Obtenha sua chave gratuita em: https://nvd.nist.gov/developers/request-an-api-key
+
+---
+
+## Como usar
+
+```bash
+# Uso padrão — menu interativo
 python main.py
 
-# With root (required for ARP scan and packet sniffer)
+# Com root (necessário para ARP scan e sniffer)
 sudo python main.py
 ```
 
-### Example session
+### Exemplo de sessão
 
 ```
 Enter target (domain / IP / CIDR):
-❯ example.com
+❯ exemplo.com                    # domínio
+❯ 192.168.1.1                   # IP
+❯ 192.168.1.0/24                # rede local (CIDR)
 
 Select modules:
 [1] DNS recon
 [2] Subdomain enum
 ...
-[0] RUN ALL
+[0] RUN ALL — executa todos os módulos disponíveis
 ```
+
+### Configurações disponíveis
+
+| Opção | Descrição | Exemplo |
+|-------|-----------|---------|
+| Threads | Conexões paralelas | 50 (padrão), 200 (agressivo) |
+| Timeout | Tempo por conexão | 5s (padrão), 2s (rápido) |
+| Ports | Range de portas | `common`, `1-1024`, `80,443`, `1-65535` |
+| Dir mode | Velocidade do dir enum | Fast (~30s), Normal (~5min), Full (~20min) |
 
 ---
 
 ## Wordlists
 
-GhostOpcode auto-detects Kali Linux wordlists.
-If running on another distro, install SecLists:
+O GhostOpcode detecta automaticamente as wordlists do Kali Linux.
+
+**Kali Linux:**
 
 ```bash
-# Kali
-sudo apt install seclists
-
-# Other distros
-git clone https://github.com/danielmiessler/SecLists /usr/share/seclists
+sudo apt install seclists wordlists
 ```
 
-Or place wordlists manually:
+**Outras distros:**
+
+```bash
+# SecLists
+sudo git clone https://github.com/danielmiessler/SecLists /usr/share/seclists
+
+# rockyou (para hash cracking)
+# Baixar em: https://github.com/brannondorsey/naive-hashcat/releases
+# Salvar em: wordlists/rockyou.txt
+```
+
+**Manual (qualquer sistema):**
+Crie a pasta `wordlists/` e adicione seus próprios arquivos:
 
 ```
 wordlists/
@@ -123,43 +192,44 @@ wordlists/
 
 ---
 
-## Output
+## Alvos de teste (autorizados)
 
-Every session generates automatically:
+Para testar sem precisar de autorização especial:
 
-```
-output/
-└── target_YYYYMMDD_HHMMSS/
-    ├── report.json     # structured data
-    ├── report.html     # visual report (open in browser)
-    ├── session.log     # chronological log
-    └── files/          # downloaded files (harvester)
-```
+| Alvo | Tipo | Descrição |
+|------|------|-----------|
+| `scanme.nmap.org` | Domínio | Servidor oficial do nmap para testes |
+| `testphp.vulnweb.com` | Domínio | Servidor vulnerável oficial da Acunetix |
+| `45.33.32.156` | IP | IP do scanme.nmap.org |
 
 ---
 
-## Legal
+## Changelog
 
-> **For authorized targets only.**
-> Using this tool against systems without explicit written permission is illegal.
-> The author assumes no responsibility for misuse.
-> Always obtain proper authorization before testing.
-
----
-
-## Author
-
-**GhostOpcode** — v1.0.0
+| Versão | O que mudou |
+|--------|-------------|
+| v1.3.1 | Filtro de CVEs genéricos/unknown |
+| v1.3.0 | nmap -sV integrado no port scan para identificação precisa |
+| v1.2.0 | CVE lookup automático com NVD API |
+| v1.1.0 | Hotfixes: logger, wordlists, catchall detection |
+| v1.0.0 | Lançamento inicial — 12 módulos de recon |
 
 ---
 
-## Disclaimer
+## Aviso legal
 
-This tool is intended for:
+> **Para uso em alvos autorizados apenas.**
+>
+> O uso desta ferramenta contra sistemas sem autorização
+> prévia e por escrito é **ilegal** em praticamente todos os países.
+>
+> O autor não se responsabiliza pelo mau uso desta ferramenta.
+> Sempre obtenha autorização antes de realizar qualquer teste.
 
-- Authorized penetration testing
-- CTF competitions
-- Security research on owned systems
-- Educational purposes
+---
 
-**Unauthorized use is illegal and unethical.**
+## Autor
+
+**GhostOpcode** · v1.3.1 · Python Recon Framework
+
+[![GitHub](https://img.shields.io/badge/GitHub-JuanTrentinTelli-black?style=flat-square&logo=github)](https://github.com/JuanTrentinTelli/ghostopcode)

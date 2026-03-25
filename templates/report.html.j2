@@ -945,6 +945,53 @@
 </section>
 {% endif %}
 
+{# --- CVE lookup --- #}
+{% if results.get('cve_lookup') %}
+<section class="module" id="cve">
+  <h2>CVE lookup (NVD)</h2>
+  <span class="status-pill">{{ results.cve_lookup.status | e }}</span>
+  {% set sm = results.cve_lookup.summary | default({}) %}
+  <dl class="kv">
+    <dt>Alvos verificados</dt><dd>{{ results.cve_lookup.targets_checked | default(0) }}</dd>
+    <dt>CVEs (linhas)</dt><dd>{{ sm.total_cves_found | default(0) }}</dd>
+    <dt>Critical / High / Med / Low</dt><dd>{{ sm.critical | default(0) }} / {{ sm.high | default(0) }} / {{ sm.medium | default(0) }} / {{ sm.low | default(0) }}</dd>
+    <dt>CISA KEV</dt><dd>{{ sm.in_cisa_kev | default(0) }}</dd>
+    <dt>Duração</dt><dd>{{ (results.cve_lookup.stats | default({})).duration_s | default('—') }}s</dd>
+  </dl>
+  {% set sk = results.cve_lookup.skipped_targets | default([]) %}
+  {% if sk %}
+  <h3>Alvos ignorados (termo genérico / IANA / nmap)</h3>
+  <p class="muted cell-long">{{ sk | join(' · ') | e }}</p>
+  {% endif %}
+  {% for block in results.cve_lookup.findings | default([]) %}
+  <h3 class="mono">{{ block.software | e }}{% if block.version %} {{ block.version | e }}{% endif %} <span class="muted">({{ block.source | e }})</span></h3>
+  {% if block.cves %}
+  <table class="data">
+    <thead><tr><th>CVE</th><th>CVSS</th><th>Severidade</th><th>KEV</th><th>Publicado</th><th>Descrição</th></tr></thead>
+    <tbody>
+    {% for c in block.cves %}
+      <tr>
+        <td class="mono"><a href="{{ c.nvd_url | e }}" rel="noopener" target="_blank">{{ c.cve_id | e }}</a></td>
+        <td>{{ c.cvss_score | default('—') }}</td>
+        <td>{% set rk = c.cvss_severity | default('—') %}<span class="badge {{ (rk | string | lower) | e }}">{{ rk | e }}</span></td>
+        <td>{% if c.cisa_kev %}<span class="badge critical">KEV</span>{% else %}—{% endif %}</td>
+        <td>{{ c.published | default('—') | e }}</td>
+        <td class="cell-long">{{ c.description | default('—') | e }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Sem resultados NVD para esta consulta.</p>
+  {% endif %}
+  {% endfor %}
+  {% if results.cve_lookup.errors | default([]) %}
+  <ul class="compact">{% for e in results.cve_lookup.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — CVE lookup</summary>{{ results.cve_lookup | json_pretty }}</details>
+</section>
+{% endif %}
+
 {# --- Hash --- #}
 {% if results.get('hash_module') %}
 <section class="module" id="hash">

@@ -186,6 +186,10 @@ ATTACK_VECTORS: dict[str, list[str]] = {
         "Brute force / weak password",
         "Cleartext session capture",
     ],
+    "Wazuh HIDS": [
+        "Agent exposed — verify manager auth / TLS",
+        "Inventory agent version for known CVEs",
+    ],
     "SNMP": [
         "Community string brute force (public/private)",
         "Configuration disclosure / network map",
@@ -603,6 +607,8 @@ def _service_risk(service: str, port: int, banner: str | None) -> str:
         return "HIGH"
     if service == "SSH":
         return "MEDIUM"
+    if service == "Wazuh HIDS":
+        return "MEDIUM"
     if banner and "Server:" in banner and re.search(r"Server:\s*[\w.-]+/[\d.]+", banner):
         if service in {"HTTP", "HTTPS"}:
             return "LOW"
@@ -628,6 +634,203 @@ def _vectors_for(
             "Map to product via TLS ALPN / cert SANs — hidden admin UIs often share certs"
         )
     return list(dict.fromkeys(vecs))
+
+
+def _nmap_name_to_service(nmap_name: str, port: int) -> str:
+    """Map nmap service `name` to GhostOpcode service labels used by risk/vectors."""
+    n = (nmap_name or "").strip().lower()
+    if port in {443, 8443} and n in (
+        "http",
+        "https",
+        "ssl/http",
+        "http-proxy",
+        "ssl/http-proxy",
+    ):
+        return "HTTPS"
+    table = {
+        "ssh": "SSH",
+        "http": "HTTP",
+        "https": "HTTPS",
+        "ssl/http": "HTTPS",
+        "telnet": "Telnet",
+        "ftp": "FTP",
+        "smtp": "SMTP",
+        "submission": "SMTP",
+        "pop3": "POP3",
+        "imap": "IMAP",
+        "mysql": "MySQL",
+        "postgresql": "PostgreSQL",
+        "ms-sql-s": "MSSQL",
+        "microsoft-ds": "SMB",
+        "netbios-ssn": "SMB",
+        "redis": "Redis",
+        "mongodb": "MongoDB",
+        "mongod": "MongoDB",
+        "docker": "Docker",
+        "elasticsearch": "Elasticsearch",
+        "snmp": "SNMP",
+        "ldap": "LDAP",
+        "ldapssl": "LDAP",
+        "ms-wbt-server": "RDP",
+        "vnc": "VNC",
+        "vnc-1": "VNC",
+        "dns": "DNS",
+        "ntp": "NTP",
+        "oracle": "Oracle",
+        "oracle-tns": "Oracle",
+        "sip": "SIP",
+        "rtsp": "RTSP",
+    }
+    if n in table:
+        return table[n]
+    if "wazuh" in n:
+        return "Wazuh HIDS"
+    if not nmap_name:
+        return "UNKNOWN"
+    return nmap_name.upper()
+
+
+def _nmap_cpe_field(info: dict[str, Any]) -> str:
+    raw = info.get("cpe")
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (list, tuple)):
+        return ", ".join(str(x) for x in raw[:5] if x)
+    return str(raw)
+
+
+def run_nmap_service_detection(
+    host: str,
+    open_ports: list[int],
+    timeout: int,
+    verbose: bool = False,
+) -> dict[int, dict[str, Any]]:
+    """
+    Run nmap -sV on discovered open ports only (phase 2).
+    Returns port → {name, product, version, extrainfo, state, cpe}.
+    Never raises; empty dict if nmap missing or scan fails.
+    """
+    out: dict[int, dict[str, Any]] = {}
+    if nmap is None or not open_ports:
+        return out
+    if shutil.which("nmap") is None:
+        return out
+
+    ports_str = ",".join(str(p) for p in sorted(set(open_ports)))
+    host_timeout = max(60, len(open_ports) * 5)
+
+    try:
+        nm = nmap.PortScanner()
+        nm.scan(
+            hosts=host,
+            ports=ports_str,
+            arguments=(
+                f"-sV -T4 --version-intensity 5 --open "
+                f"--host-timeout {host_timeout}s"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        if verbose:
+            console.print(
+                Text(f" [WARN] nmap -sV failed: {e}", style=C_WARN),
+            )
+        return out
+
+    try:
+        if host not in nm.all_hosts():
+            return out
+        host_entry = nm[host]
+        for proto in host_entry.all_protocols():
+            proto_d = host_entry[proto]
+            if not isinstance(proto_d, dict):
+                continue
+            for port_k, port_data in proto_d.items():
+                if not isinstance(port_data, dict):
+                    continue
+                if port_data.get("state") != "open":
+                    continue
+                try:
+                    pi = int(port_k)
+                except (TypeError, ValueError):
+                    continue
+                name = str(port_data.get("name") or "")
+                product = str(port_data.get("product") or "")
+                version = str(port_data.get("version") or "")
+                extrainfo = str(port_data.get("extrainfo") or "")
+                cpe = _nmap_cpe_field(port_data)
+                out[pi] = {
+                    "name": name,
+                    "product": product,
+                    "version": version,
+                    "extrainfo": extrainfo,
+                    "state": str(port_data.get("state") or ""),
+                    "cpe": cpe,
+                }
+    except Exception as e:  # noqa: BLE001
+        if verbose:
+            console.print(
+                Text(f" [WARN] nmap -sV parse error: {e}", style=C_WARN),
+            )
+        return out
+
+    return out
+
+
+def _apply_nmap_to_port_row(
+    p: int,
+    row: dict[str, Any],
+    nmap_info: dict[str, Any] | None,
+    verbose: bool,
+) -> None:
+    """Mutate row in place with nmap -sV data; refresh risk/vectors/CVE hints."""
+    if not nmap_info:
+        return
+
+    name = (nmap_info.get("name") or "").strip()
+    product = (nmap_info.get("product") or "").strip()
+    version = (nmap_info.get("version") or "").strip()
+    extra = (nmap_info.get("extrainfo") or "").strip()
+    cpe = (nmap_info.get("cpe") or "").strip()
+
+    if cpe:
+        row["cpe"] = cpe
+    if extra:
+        row["extrainfo"] = extra
+
+    if product:
+        row["product"] = product
+    elif name and not row.get("product"):
+        row["product"] = name
+
+    if version:
+        row["version"] = version
+
+    if name:
+        row["service"] = _nmap_name_to_service(name, p)
+
+    if product or version or extra:
+        parts = [x for x in (row.get("product"), row.get("version"), extra) if x]
+        row["banner"] = " ".join(str(x) for x in parts if x)
+    elif name and not row.get("banner"):
+        row["banner"] = " ".join(x for x in (name, extra) if x)
+
+    row["nmap_sV"] = True
+    ban = row.get("banner")
+    row["risk"] = _service_risk(str(row.get("service") or "UNKNOWN"), p, ban)
+    row["vectors"] = _vectors_for(str(row.get("service") or "UNKNOWN"), p, row["risk"])
+    ch = _cve_hints_for_banner(ban if isinstance(ban, str) else None)
+    row["cve_hints"] = ch
+    if ch:
+        row["vectors"] = row["vectors"] + [
+            f"CVE hygiene: {h}" for h in ch[:2]
+        ]
+    if extra and verbose:
+        prev = row.get("note") or ""
+        row["note"] = (
+            f"{prev} nmap:{extra}".strip() if prev else f"nmap:{extra}"
+        )
 
 
 def infer_os(open_ports: list[int], banners: dict[int, str | None]) -> dict[str, Any]:
@@ -684,46 +887,6 @@ def infer_os(open_ports: list[int], banners: dict[int, str | None]) -> dict[str,
         "confidence": "LOW",
         "evidence": ["insufficient port/banner signals"],
     }
-
-
-def _nmap_enrich(host: str, ports: list[int]) -> dict[int, dict[str, str | None]]:
-    """
-    Optional version detection via python-nmap when nmap binary exists.
-    Returns map port → {product, version, extrainfo}.
-    """
-    out: dict[int, dict[str, str | None]] = {}
-    if nmap is None or not ports:
-        return out
-    if shutil.which("nmap") is None:
-        return out
-    try:
-        nm = nmap.PortScanner()
-        portstr = ",".join(str(p) for p in ports)
-        nm.scan(
-            host,
-            portstr,
-            arguments="-sV --version-light --host-timeout 90s",
-        )
-        if host not in nm.all_hosts():
-            return out
-        tcp = nm[host].get("tcp", {})
-        for p_s, info in tcp.items():
-            if not isinstance(info, dict):
-                continue
-            if info.get("state") != "open":
-                continue
-            try:
-                pi = int(p_s)
-            except (TypeError, ValueError):
-                continue
-            out[pi] = {
-                "product": info.get("name") or info.get("product"),
-                "version": info.get("version"),
-                "extrainfo": info.get("extrainfo"),
-            }
-    except Exception:  # noqa: BLE001
-        return out
-    return out
 
 
 class _PortScanLiveDisplay:
@@ -854,7 +1017,8 @@ def _print_vectors(critical_rows: list[dict[str, Any]]) -> None:
 
 def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     """
-    TCP connect scan, banner grab, OS inference, vectors, optional nmap -sV.
+    Two-phase scan: (1) threaded TCP connect + banner grab;
+    (2) nmap -sV on open ports only for accurate product/version (CVE-friendly).
     """
     t_start = time.perf_counter()
     threads = max(1, int(config.get("threads") or DEFAULT_THREADS))
@@ -956,7 +1120,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     console.print(
         Text(
-            f" [SCAN] Scanning {host_ip} — {n_total} ports · {threads} threads",
+            f" [SCAN] Phase 1 — TCP connect · {host_ip} · {n_total} ports · {threads} threads",
             style=f"bold {C_PRI}",
         )
     )
@@ -1049,33 +1213,119 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     open_sorted = sorted(set(open_ports))
     banners: dict[int, str | None] = {}
 
+    console.print()
+    console.print(
+        Text.assemble(
+            (" [SCAN] Phase 1 complete — ", C_MUTED),
+            (f"{len(open_sorted)} open", f"bold {C_WARN}"),
+            (" · ", C_MUTED),
+            (f"{rps_connect:.0f} req/s", C_PRI),
+            (" · ", C_MUTED),
+            (f"{tcp_phase_s:.1f}s", C_DIM),
+        )
+    )
+
     # Banner phase (sequential — fewer sockets; avoids stampeding target)
     for p in open_sorted:
         b = grab_banner(host_ip, p, min(timeout, 4.0))
         banners[p] = b
 
-    nmap_data = _nmap_enrich(host_ip, open_sorted)
+    nmap_map: dict[int, dict[str, Any]] = {}
+    base["nmap_binary_present"] = bool(shutil.which("nmap"))
+    base["nmap_python_available"] = nmap is not None
+    base["nmap_sV_used"] = False
+    base["nmap_service_detection"] = {}
+
+    if open_sorted:
+        if nmap is None:
+            console.print(
+                Text(
+                    " [!] python-nmap unavailable — Phase 2 (-sV) skipped",
+                    style=C_WARN,
+                )
+            )
+        elif not shutil.which("nmap"):
+            console.print(
+                Text(
+                    " [!] nmap not found — skipping service detection (-sV)",
+                    style=C_WARN,
+                )
+            )
+            console.print(
+                Text(" [i] Install: sudo apt install nmap", style=C_MUTED),
+            )
+        else:
+            console.print()
+            console.print(
+                Text(
+                    f" [SCAN] Phase 2 — nmap -sV on {len(open_sorted)} open port(s)",
+                    style=f"bold {C_PRI}",
+                )
+            )
+            console.print(Text(" [►] Identifying services…", style=C_DIM))
+            nmap_map = run_nmap_service_detection(
+                host_ip,
+                open_sorted,
+                int(max(1, timeout)),
+                verbose,
+            )
+            base["nmap_sV_used"] = bool(nmap_map)
+            base["nmap_service_detection"] = {
+                str(k): v for k, v in nmap_map.items()
+            }
+            console.print()
+            console.print(
+                Text(
+                    " [✓] Service detection complete (nmap -sV)",
+                    style=f"bold {C_PRI}",
+                )
+            )
+            for p in open_sorted:
+                info = nmap_map.get(p)
+                if info:
+                    prod = (info.get("product") or "").strip()
+                    ver = (info.get("version") or "").strip()
+                    nm_name = (info.get("name") or "").strip()
+                    extra = (info.get("extrainfo") or "").strip()
+                    label = " ".join(x for x in (prod or nm_name, ver) if x).strip()
+                    if not label:
+                        label = nm_name or "unknown"
+                    if extra and len(label) < 50:
+                        label = f"{label} ({extra})"[:44]
+                    svc_disp = (
+                        _nmap_name_to_service(nm_name, p) if nm_name else "TCP"
+                    )
+                    console.print(
+                        Text.assemble(
+                            ("     ", C_MUTED),
+                            (f"{p}", C_DIM),
+                            (" → ", C_MUTED),
+                            (f"{label[:46]:<46}", C_PRI),
+                            (f" ({svc_disp})", C_MUTED),
+                        )
+                    )
+                else:
+                    console.print(
+                        Text.assemble(
+                            ("     ", C_MUTED),
+                            (f"{p}", C_DIM),
+                            (" → ", C_MUTED),
+                            ("unknown", C_DIM),
+                            (" (TCP)", C_MUTED),
+                        )
+                    )
 
     port_rows: list[dict[str, Any]] = []
     for p in open_sorted:
         banner = banners.get(p)
         service, product, version, note = _classify_banner(banner, p, host_ip)
-        nm = nmap_data.get(p) or {}
-        if (not product or not version) and nm:
-            product = product or nm.get("product")
-            ver_nm = nm.get("version")
-            if ver_nm:
-                version = version or str(ver_nm)
-            if nm.get("extrainfo") and verbose:
-                note = (note or "") + f" nmap:{nm['extrainfo']}"
-
         risk = _service_risk(service, p, banner)
         vectors = _vectors_for(service, p, risk)
         cve_hints = _cve_hints_for_banner(banner)
         if cve_hints:
             vectors = vectors + [f"CVE hygiene: {h}" for h in cve_hints[:2]]
 
-        row = {
+        row: dict[str, Any] = {
             "port": p,
             "state": "open",
             "service": service,
@@ -1086,8 +1336,10 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             "vectors": vectors,
             "note": note,
             "cve_hints": cve_hints,
+            "nmap_sV": False,
         }
-        if service in {"MySQL", "PostgreSQL", "MongoDB", "Redis"} and p in {
+        _apply_nmap_to_port_row(p, row, nmap_map.get(p), verbose)
+        if row["service"] in {"MySQL", "PostgreSQL", "MongoDB", "Redis"} and p in {
             3306,
             5432,
             27017,
@@ -1107,9 +1359,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     base["stats"]["closed"] = max(0, n_total - n_open)
     base["stats"]["duration_s"] = round(duration, 2)
     base["stats"]["req_per_sec"] = round(rps_connect, 1)
+    base["stats"]["tcp_phase_s"] = round(tcp_phase_s, 2)
+    base["stats"]["nmap_ports_classified"] = len(nmap_map)
     base["ports"] = port_rows
     base["findings"] = port_rows
-    base["os_inference"] = infer_os(open_sorted, banners)
+
+    enriched_banners: dict[int, str | None] = dict(banners)
+    for r in port_rows:
+        bfin = r.get("banner")
+        if isinstance(bfin, str) and bfin.strip():
+            enriched_banners[r["port"]] = bfin
+    base["os_inference"] = infer_os(open_sorted, enriched_banners)
 
     rs: dict[str, list[str]] = {
         "CRITICAL": [],
@@ -1163,6 +1423,10 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 C_DIM,
             ),
             (f"     Speed     : {base['stats']['req_per_sec']} req/s\n", C_DIM),
+            (
+                f"     nmap -sV  : {len(nmap_map)}/{n_open} ports fingerprinted\n",
+                C_DIM,
+            ),
             (f"     Duration  : {base['stats']['duration_s']}s", C_DIM),
         )
     )

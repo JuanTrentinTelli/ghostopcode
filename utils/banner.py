@@ -9,6 +9,8 @@ import time
 from rich.console import Console
 from rich.text import Text
 
+from config import AUTHOR, VERSION
+
 # Matrix primary — surgical green
 _MATRIX = "#00FF41"
 _COLD_GRAY = "#8B9CA8"
@@ -28,7 +30,10 @@ _ASCII_LINES = r"""
   ██████  ██       ██████  ██████  ██████  ███████
 """.strip("\n")
 
-_INFO_LINE = "v1.0.3  ·  by GhostOpcode  ·  python recon framework"
+def _info_line() -> str:
+    return f"v{VERSION}  ·  by {AUTHOR}  ·  python recon framework"
+
+
 _DISCLAIMER_LINE = (
     "[ AUTHORIZED TARGETS ONLY — ILLEGAL USE IS YOUR RESPONSIBILITY ]"
 )
@@ -75,6 +80,6 @@ def show_banner() -> None:
     console.print(Text(seam, style=_COLD_GRAY))
 
     reset = "\033[0m"
-    _typewriter_plain(_INFO_LINE, _rgb_fg(_MATRIX), reset)
+    _typewriter_plain(_info_line(), _rgb_fg(_MATRIX), reset)
     _typewriter_plain(_DISCLAIMER_LINE, _rgb_fg(_DISCLAIMER), reset)
     print()

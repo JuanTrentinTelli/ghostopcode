@@ -579,6 +579,8 @@ def _mission_summary(
             f"Harvester: depth {cfg['depth']}, save_files={'yes' if cfg.get('save_files', True) else 'no'}"
         )
     lines.append("Export   : json · html · log (automatic)")
+    if any(k in ("ports", "whois") for _, k, _ in modules):
+        lines.append("CVE lookup : automatic (NVD API · NVD_API_KEY in .env)")
     body = "\n".join(lines)
     p = Panel(
         Text(body, style=C_DIM),
@@ -674,6 +676,13 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         stt = res.get("stats") or {}
         n = int(stt.get("total_packets") or 0)
         return f"{n} packets · {res.get('duration_elapsed_s', res.get('duration', ''))}s"
+    if mod == "cve_lookup":
+        sm = res.get("summary") or {}
+        return (
+            f"{sm.get('total_cves_found', 0)} CVEs · "
+            f"KEV {sm.get('in_cisa_kev', 0)} · "
+            f"{res.get('targets_checked', 0)} targets"
+        )
     return None
 
 
@@ -910,6 +919,33 @@ def main() -> None:
         results, raw_results = _run_modules_styled(
             selected, target, config, session_logger
         )
+        has_port_or_whois = (
+            "port_scan" in raw_results or "whois_scan" in raw_results
+        )
+        if has_port_or_whois:
+            from modules.cve_lookup import run as run_cve
+
+            console.print()
+            console.print(
+                Text(
+                    "\n [►] Running CVE lookup (automatic)...\n",
+                    style=f"bold {C_PRI}",
+                )
+            )
+            cve_results = run_cve(raw_results, config)
+            raw_results["cve_lookup"] = cve_results
+            results.append(
+                {
+                    "module": "CVE lookup (NVD)",
+                    "status": cve_results.get("status", "—"),
+                    "findings": cve_results.get("findings", []),
+                    "error": (cve_results.get("errors") or [None])[0],
+                    "result_hint": _result_hint(cve_results, "CVE lookup"),
+                }
+            )
+            session_logger.log(
+                f"CVE lookup complete: status={cve_results.get('status')}"
+            )
     finally:
         session_logger.stop_stdout_tee()
     elapsed_modules_s = time.perf_counter() - t_run

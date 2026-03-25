@@ -14,3 +14,4 @@ cryptography>=42.0.0
 python-nmap==0.7.1
 scapy==2.5.0
 python-dotenv==1.0.1
+packaging==24.0
