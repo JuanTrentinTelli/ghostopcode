@@ -214,15 +214,15 @@ Safe hosts for practice (no special permission needed):
 
 ## Changelog
 
-| Versão | O que mudou |
-|--------|-------------|
-| **v1.4.1** | Motor passivo de subdomínios: subfinder (substituição da ferramenta anterior, incompatível com Kali Linux atual) |
-| v1.4.0 | WAF Detection · URL Harvester · enum passivo de subdomínios · terminal verbosity |
-| v1.3.1 | Filtro CVEs genéricos · hotfix logger |
-| v1.3.0 | nmap -sV integrado no port scan |
-| v1.2.0 | CVE lookup automático com NVD API |
-| v1.1.0 | Hotfixes: logger, wordlists, catchall detection |
-| v1.0.0 | Lançamento inicial — 12 módulos de recon |
+| Version | Changes |
+|---------|---------|
+| **v1.4.1** | Passive subdomain engine: **subfinder** (replaces the previous tool, which is broken on current Kali Linux) |
+| v1.4.0 | WAF Detection · URL Harvester · passive subdomain enum · terminal verbosity |
+| v1.3.1 | Filter generic CVEs · logger hotfix |
+| v1.3.0 | **nmap -sV** integrated into port scan |
+| v1.2.0 | Automatic CVE lookup via NVD API |
+| v1.1.0 | Hotfixes: logger, wordlists, catch-all detection |
+| v1.0.0 | Initial release — 12 recon modules |
 
 ---
 
