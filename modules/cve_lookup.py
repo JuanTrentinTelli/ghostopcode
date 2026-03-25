@@ -129,6 +129,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from utils.output import display_findings
+
 load_dotenv()
 
 C_PRI = "#00FF41"
@@ -612,6 +614,8 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     kev_alerts: list[dict[str, Any]] = []
     flat_rows: list[dict[str, Any]] = []
     auth_failed = False
+    critical_cvss_ge_9: list[dict[str, Any]] = []
+    seen_critical_cve: set[str] = set()
 
     for tgt in targets:
         software = tgt["software"]
@@ -630,7 +634,26 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
             break
 
         cves = [x for x in raw_list if isinstance(x, dict) and x.get("cve_id")]
+        label = f"{software}" + (f" {ver}" if ver else "")
         for c in cves:
+            sc_raw = c.get("cvss_score")
+            if sc_raw is not None:
+                try:
+                    sc_f = float(sc_raw)
+                except (TypeError, ValueError):
+                    sc_f = None
+                if sc_f is not None and sc_f >= 9.0:
+                    cid9 = str(c.get("cve_id") or "")
+                    if cid9 and cid9 not in seen_critical_cve:
+                        seen_critical_cve.add(cid9)
+                        critical_cvss_ge_9.append(
+                            {
+                                "risk": "CRITICAL",
+                                "category": "cve",
+                                "value": f"{cid9} — CVSS {sc_raw} — {label}",
+                                "note": (str(c.get("description") or ""))[:200],
+                            }
+                        )
             if c.get("cisa_kev"):
                 kev_alerts.append({**c, "source_label": src})
             bucket = _severity_bucket(
@@ -647,7 +670,6 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         highest = max(scores) if scores else None
         has_kev = any(x.get("cisa_kev") for x in cves)
 
-        label = f"{software}" + (f" {ver}" if ver else "")
         console.print()
         console.print(
             Text.assemble(
@@ -735,6 +757,13 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
                 "       This vulnerability is actively exploited in the wild",
                 style=f"bold {C_ERR}",
             )
+        )
+
+    if critical_cvss_ge_9:
+        display_findings(
+            critical_cvss_ge_9,
+            module="cve_lookup",
+            verbose=bool(config.get("verbose")),
         )
 
     total_cves = sum(len(f["cves"]) for f in findings)

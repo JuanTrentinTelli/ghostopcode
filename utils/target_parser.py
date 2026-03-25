@@ -13,10 +13,34 @@ _DOMAIN_RE = re.compile(
 
 # Module compatibility: which logical module keys apply per target type
 _DOMAIN_MODULES = frozenset(
-    {"dns", "subs", "whois", "ports", "dirs", "harvest", "methods", "js", "hash"}
+    {
+        "dns",
+        "subs",
+        "whois",
+        "ports",
+        "dirs",
+        "harvest",
+        "methods",
+        "js",
+        "hash",
+        "waf",
+        "urls",
+        "subfinder",
+    }
 )
 _IP_MODULES = frozenset(
-    {"dns", "whois", "ports", "dirs", "harvest", "methods", "js", "hash", "sniff"}
+    {
+        "dns",
+        "whois",
+        "ports",
+        "dirs",
+        "harvest",
+        "methods",
+        "js",
+        "hash",
+        "sniff",
+        "waf",
+    }
 )
 _CIDR_MODULES = frozenset({"arp", "ports", "sniff"})
 
@@ -54,8 +78,8 @@ class Target:
         Return True if the module makes sense for this target type.
 
         Compatibility:
-          DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash
-          IP     → dns, whois, ports, dirs, harvest, methods, js, hash, sniff
+          DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder
+          IP     → dns, whois, ports, dirs, harvest, methods, js, hash, sniff, waf
           CIDR   → arp, ports, sniff
         """
         key = module.lower().strip()

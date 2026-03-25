@@ -945,6 +945,153 @@
 </section>
 {% endif %}
 
+{# --- WAF detection --- #}
+{% if results.get('waf_detect') and results.waf_detect.status not in ['skipped'] %}
+<section class="module" id="waf">
+  <h2>WAF detection</h2>
+  <span class="status-pill">Status: {{ results.waf_detect.status | e }}</span>
+  <p class="muted">Base: <span class="mono">{{ results.waf_detect.base_url | default('—') | e }}</span></p>
+  <dl class="kv">
+    <dt>WAF detectado</dt><dd>{{ results.waf_detect.waf_detected | default(false) }}</dd>
+    <dt>Sem WAF (heurística)</dt><dd>{{ results.waf_detect.no_waf_detected | default('—') }}</dd>
+  </dl>
+  {% if results.waf_detect.waf %}
+  {% set w = results.waf_detect.waf %}
+  <h3>Vendor / tipo</h3>
+  <dl class="kv">
+    <dt>Nome</dt><dd>{{ w.name | e }}</dd>
+    <dt>Tipo</dt><dd>{{ w.type | e }}</dd>
+    <dt>Confiança</dt><dd>{{ w.confidence | e }}</dd>
+    <dt>Nota</dt><dd class="cell-long">{{ w.note | default('—') | e }}</dd>
+    <dt>Evasão (hint)</dt><dd class="cell-long">{{ w.evasion | default('—') | e }}</dd>
+  </dl>
+  {% endif %}
+  {% set dm = results.waf_detect.detection_methods | default({}) %}
+  <h3>Métodos</h3>
+  <ul class="compact">
+    <li>Passive headers: {{ dm.passive_headers | default(false) }}</li>
+    <li>Active probes: {{ dm.active_probes | default(false) }}</li>
+    <li>Timing: {{ dm.timing | default(false) }}</li>
+  </ul>
+  {% set pr = results.waf_detect.probes | default([]) %}
+  {% if pr %}
+  <h3>Probes</h3>
+  <table class="data">
+    <thead><tr><th>Probe</th><th>Bloqueado</th><th>HTTP</th></tr></thead>
+    <tbody>
+    {% for p in pr %}
+      <tr>
+        <td>{{ p.probe | e }}</td>
+        <td>{{ p.blocked | default(false) }}</td>
+        <td>{{ p.status | default('—') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% set tm = results.waf_detect.timing | default({}) %}
+  {% if tm %}
+  <h3>Timing</h3>
+  <dl class="kv">
+    <dt>Média normal (ms)</dt><dd>{{ tm.avg_normal_ms | default('—') }}</dd>
+    <dt>Média probe (ms)</dt><dd>{{ tm.avg_probe_ms | default('—') }}</dd>
+    <dt>Δ delay (ms)</dt><dd>{{ tm.delay_ms | default('—') }}</dd>
+    <dt>Inspeção provável</dt><dd>{{ tm.inspection_likely | default(false) }}</dd>
+  </dl>
+  {% endif %}
+  {% if results.waf_detect.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.waf_detect.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — WAF detection</summary>{{ results.waf_detect | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- URL harvester --- #}
+{% if results.get('url_harvester') and results.url_harvester.status not in ['skipped'] %}
+<section class="module" id="url-harvest">
+  <h2>URL harvester</h2>
+  <span class="status-pill">Status: {{ results.url_harvester.status | e }}</span>
+  <p class="muted">Alvo: <span class="mono">{{ results.url_harvester.target | e }}</span></p>
+  {% set src = results.url_harvester.sources | default({}) %}
+  <h3>Fontes</h3>
+  <ul class="compact">
+    {% for k, v in src | dictsort %}
+    <li><strong>{{ k | e }}</strong>: {{ (v.count | default(0)) }} URLs
+        {% if v.available is defined %}· disponível: {{ v.available }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% set uh = results.url_harvester.stats | default({}) %}
+  <dl class="kv">
+    <dt>Total (merge)</dt><dd>{{ results.url_harvester.total_urls | default('—') }}</dd>
+    <dt>Único (dedup params)</dt><dd>{{ results.url_harvester.unique_urls | default('—') }}</dd>
+    <dt>Raw coletado (soma fontes)</dt><dd>{{ uh.total_collected | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ uh.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set fd = results.url_harvester.findings | default({}) %}
+  {% if fd %}
+  <h3>Padrões (amostra)</h3>
+  {% for cat, lst in fd | dictsort %}
+  <h4>{{ cat | e }} ({{ lst | length }})</h4>
+  <ul class="compact mono">{% for u in lst[:25] %}<li>{{ u | e }}</li>{% endfor %}{% if lst | length > 25 %}<li>…</li>{% endif %}</ul>
+  {% endfor %}
+  {% endif %}
+  {% if results.url_harvester.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.url_harvester.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — URL harvester</summary>{{ results.url_harvester | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Subfinder enum --- #}
+{% if results.get('subfinder_enum') and results.subfinder_enum.status not in ['skipped'] %}
+<section class="module" id="subfinder">
+  <h2>Subfinder enum</h2>
+  <span class="status-pill">Status: {{ results.subfinder_enum.status | e }}</span>
+  <p class="muted">Alvo: <span class="mono">{{ results.subfinder_enum.target | e }}</span> · subfinder {{ results.subfinder_enum.subfinder_version | default('—') | e }}</p>
+  {% set ast = results.subfinder_enum.stats | default({}) %}
+  <dl class="kv">
+    <dt>Total (hostnames)</dt><dd>{{ ast.total_found | default('—') }}</dd>
+    <dt>Resolvidos</dt><dd>{{ ast.resolved | default('—') }}</dd>
+    <dt>Não resolvidos</dt><dd>{{ ast.unresolved | default('—') }}</dd>
+    <dt>Novos vs wordlist</dt><dd>{{ ast.new_vs_wordlist | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ ast.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set cmp = results.subfinder_enum.comparison | default({}) %}
+  <h3>Comparação com subdomain enum</h3>
+  <ul class="compact">
+    <li>Ambos: {{ (cmp.both | default([])) | length }}</li>
+    <li>Só wordlist: {{ (cmp.only_wordlist | default([])) | length }}</li>
+    <li>Só subfinder: {{ (cmp.only_subfinder | default([])) | length }}</li>
+  </ul>
+  {% set af = results.subfinder_enum.found | default([]) %}
+  {% if af %}
+  <h3>Hosts</h3>
+  <table class="data">
+    <thead><tr><th>FQDN</th><th>IP</th><th>Categoria</th><th>Risco</th><th>Novo*</th></tr></thead>
+    <tbody>
+    {% for row in af[:200] %}
+      <tr>
+        <td class="mono">{{ row.fqdn | e }}</td>
+        <td class="mono">{{ row.ip | default('—') | e }}</td>
+        <td>{{ row.category_label | default(row.category) | e }}</td>
+        <td><span class="badge {{ (row.risk | string | lower) | e }}">{{ row.risk | e }}</span></td>
+        <td>{% if row.new %}★{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if af | length > 200 %}<p class="muted">Mostrando 200 de {{ af | length }}.</p>{% endif %}
+  {% endif %}
+  {% if results.subfinder_enum.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.subfinder_enum.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Subfinder</summary>{{ results.subfinder_enum | json_pretty }}</details>
+</section>
+{% endif %}
+
 {# --- CVE lookup --- #}
 {% if results.get('cve_lookup') %}
 <section class="module" id="cve">

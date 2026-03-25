@@ -30,6 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT
+from utils.output import display_findings
 from utils.target_parser import Target
 
 try:
@@ -1382,6 +1383,31 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         if rk in rs:
             rs[rk].append(str(r["port"]))
     base["risk_summary"] = rs
+
+    DB_PORTS_INTERNET: frozenset[int] = frozenset(
+        {3306, 5432, 27017, 6379, 1433, 1521}
+    )
+    db_exposed = [r for r in port_rows if int(r.get("port", 0)) in DB_PORTS_INTERNET]
+    if db_exposed:
+        display_findings(
+            [
+                {
+                    "risk": "CRITICAL",
+                    "category": "database_exposed",
+                    "value": (
+                        f"{r['port']}/tcp open — "
+                        f"{r.get('service', '?')} ({r.get('product') or 'unknown'})"
+                    ),
+                    "note": (
+                        str(r.get("note") or "").strip()
+                        or "Database services should not be exposed to the internet"
+                    ),
+                }
+                for r in db_exposed
+            ],
+            module="port_scan",
+            verbose=verbose,
+        )
 
     _print_open_table(port_rows)
 

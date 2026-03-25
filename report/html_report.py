@@ -25,6 +25,9 @@ MODULE_LABELS: dict[str, str] = {
     "http_methods": "HTTP Methods",
     "js_recon": "JS Recon",
     "hash_module": "Hash Module",
+    "waf_detect": "WAF Detection",
+    "url_harvester": "URL Harvester",
+    "subfinder_enum": "Subfinder Enum",
     "arp_scan": "ARP Scan",
     "packet_sniffer": "Packet Sniffer",
     "cve_lookup": "CVE Lookup (NVD)",
@@ -158,7 +161,7 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
         risk_counts=risk_counts,
         module_labels=MODULE_LABELS,
         generated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        version=getattr(app_config, "VERSION", "1.3.1"),
+        version=getattr(app_config, "VERSION", "1.4.1"),
     )
 
     with open(output_path, "w", encoding="utf-8") as f:

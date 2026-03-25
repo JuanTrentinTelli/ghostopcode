@@ -100,6 +100,9 @@ WORDLIST_PASSWORDS = resolve_wordlist(
 DEFAULT_THREADS = 50
 DEFAULT_TIMEOUT = 5  # seconds
 
+# Subfinder passive enum (wall-clock budget; CLI ``-timeout`` is also in seconds)
+SUBFINDER_TIMEOUT = 300
+
 # ── Port scan ───────────────────────────────────────────────────────────────
 COMMON_PORTS = [
     21,
@@ -138,5 +141,5 @@ USER_AGENT = (
 OUTPUT_DIR = "output"
 
 # ── Meta ────────────────────────────────────────────────────────────────────
-VERSION = "1.3.1"
+VERSION = "1.4.1"
 AUTHOR = "GhostOpcode"

@@ -26,6 +26,7 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT, OUTPUT_DIR, USER_AGENT
+from utils.output import display_findings
 from utils.target_parser import Target
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1125,6 +1126,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                         "status": row.get("status"),
                         "confirmed": True,
                         "secrets": secrets,
+                        "signature_key": val.get("signature_key") or "config_leak",
                     }
                 )
                 # surface file URL for download consideration
@@ -1133,10 +1135,25 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 ):
                     file_urls.add(row["url"].split("#")[0])
 
-        for leak in config_leaks:
-            console.print(
-                Text(f"   [!!!] CONFIG LEAK: {leak['path']}", style=f"bold {C_ERR}")
+        if config_leaks:
+            display_findings(
+                [
+                    {
+                        "risk": "CRITICAL",
+                        "category": str(leak.get("signature_key") or "config_leak"),
+                        "value": str(leak.get("url") or leak.get("path") or ""),
+                        "note": (
+                            f"Confirmed leak — {len(leak.get('secrets') or [])} secret(s) · "
+                            f"{leak.get('path', '')}"
+                        ),
+                    }
+                    for leak in config_leaks
+                    if leak.get("confirmed")
+                ],
+                module="harvester",
+                verbose=bool(config.get("verbose")),
             )
+        for leak in config_leaks:
             for s in leak.get("secrets", [])[:6]:
                 console.print(
                     Text(

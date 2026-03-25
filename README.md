@@ -14,12 +14,12 @@
   ██████  ██       ██████  ██████  ██████  ███████
 ```
 
-**v1.3.1 · by GhostOpcode · Python Recon Framework**
+**v1.4.1 · by GhostOpcode · Python Recon Framework**
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Kali-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.3.1-orange?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.4.1-orange?style=flat-square)
 
 > Offensive reconnaissance framework — 100% local, no external APIs (optional CVE lookup via NVD only)
 
@@ -51,8 +51,11 @@ CLI. **No command-line arguments required**; run it and follow the menu.
 | 7 | **HTTP Methods** | Probes dangerous HTTP methods (PUT, DELETE, TRACE). CORS misconfiguration detection. Security header audit. |
 | 8 | **JS Recon** | Analyses target JavaScript. Extracts hardcoded API endpoints, secrets (AWS keys, tokens), and exposed source maps. |
 | 9 | **Hash Module** | Identifies hash algorithms. Local wordlist cracking (e.g. rockyou). Optional **hashcat** integration. |
-| A | **ARP Scan** | Finds live hosts on the LAN via ARP. Vendor identification from MAC. Requires a **CIDR** target and **root/sudo**. |
-| S | **Packet Sniffer** | Live traffic capture. Protocol parsing and passive intel. Requires **root/sudo**. |
+| 10 | **WAF Detection** | Identifies WAF/CDN/IPS from headers, probes, and timing. |
+| 11 | **URL Harvester** | Historical URLs from Wayback, Common Crawl, OTX, optional gau; vulnerability-style bucketing. |
+| 12 | **Subfinder Enum** | Enumeração profunda de subdomínios via subfinder (ProjectDiscovery). Usa Certificate Transparency logs e múltiplas fontes OSINT passivas. Compara com subdomain_enum e destaca subdomínios encontrados apenas pelo subfinder. Mais eficiente e estável no Kali Linux do que o motor passivo anterior. |
+| 13 | **ARP Scan** | Finds live hosts on the LAN via ARP. Vendor identification from MAC. Requires a **CIDR** target and **root/sudo**. |
+| 14 | **Packet Sniffer** | Live traffic capture. Protocol parsing and passive intel. Requires **root/sudo**. |
 | ★ | **CVE Lookup** | Runs automatically after a port scan (when configured). Queries the **NVD** using discovered services and versions. Returns relevant CVEs with CVSS scores. |
 
 ---
@@ -109,6 +112,14 @@ On other distros, see [Wordlists](#wordlists).
 ```bash
 sudo apt install nmap
 ```
+
+### Optional external tools
+
+| Ferramenta | Para que serve | Instalação |
+|------------|---------------|------------|
+| `subfinder` | Enumeração profunda de subdomínios via OSINT passivo | `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest` |
+| `hashcat` | Hash cracking com GPU | `sudo apt install hashcat` |
+| `gau` | Mais fontes de URLs históricas | `go install github.com/lc/gau/v2/cmd/gau@latest` |
 
 ### 5. (Optional) CVE lookup
 
@@ -203,13 +214,15 @@ Safe hosts for practice (no special permission needed):
 
 ## Changelog
 
-| Version | Changes |
-|---------|---------|
-| v1.3.1 | CVE lookup: filter generic/unknown services; skip IANA port names and nmap noise |
-| v1.3.0 | Port scan: **nmap -sV** for precise service/version fingerprinting |
-| v1.2.0 | Automatic CVE lookup via NVD API |
-| v1.1.0 | Logger, wordlist handling, HTTP catch-all hardening |
-| v1.0.0 | Initial release — 12 recon modules |
+| Versão | O que mudou |
+|--------|-------------|
+| **v1.4.1** | Motor passivo de subdomínios: subfinder (substituição da ferramenta anterior, incompatível com Kali Linux atual) |
+| v1.4.0 | WAF Detection · URL Harvester · enum passivo de subdomínios · terminal verbosity |
+| v1.3.1 | Filtro CVEs genéricos · hotfix logger |
+| v1.3.0 | nmap -sV integrado no port scan |
+| v1.2.0 | CVE lookup automático com NVD API |
+| v1.1.0 | Hotfixes: logger, wordlists, catchall detection |
+| v1.0.0 | Lançamento inicial — 12 módulos de recon |
 
 ---
 
@@ -227,6 +240,6 @@ Safe hosts for practice (no special permission needed):
 
 ## Author
 
-**GhostOpcode** · v1.3.1 · Python Recon Framework
+**GhostOpcode** · v1.4.1 · Python Recon Framework
 
 [![GitHub](https://img.shields.io/badge/GitHub-JuanTrentinTelli-black?style=flat-square&logo=github)](https://github.com/JuanTrentinTelli/ghostopcode)

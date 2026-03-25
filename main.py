@@ -104,6 +104,9 @@ _MODULE_IMPORTS: dict[str, str] = {
     "harvest": "modules.harvester",
     "methods": "modules.http_methods",
     "js": "modules.js_recon",
+    "waf": "modules.waf_detect",
+    "urls": "modules.url_harvester",
+    "subfinder": "modules.subfinder_enum",
     "arp": "modules.network.arp_scan",
     "sniff": "modules.network.packet_sniffer",
 }
@@ -212,8 +215,11 @@ _MODULE_ROWS: list[tuple[int, str, str, str]] = [
     (7, "methods", "HTTP methods", "OPTIONS/PUT/DELETE/TRACE probe"),
     (8, "js", "JS recon", "endpoints + secrets + source maps"),
     (9, "hash", "Hash module", "identify + crack local"),
-    (10, "arp", "ARP scan", "CIDR only"),
-    (11, "sniff", "Packet sniffer", "CIDR / single IP"),
+    (10, "waf", "WAF detection", "identify WAF/IDS/IPS/CDN"),
+    (11, "urls", "URL harvester", "GAU + historical URLs + vuln patterns"),
+    (12, "subfinder", "Subfinder", "passive OSINT subdomain enum (requires subfinder)"),
+    (13, "arp", "ARP scan", "CIDR only"),
+    (14, "sniff", "Packet sniffer", "CIDR / single IP"),
 ]
 
 
@@ -240,8 +246,8 @@ def _render_module_menu(target: Target) -> None:
         desc = Text(blurb, style=C_MUTED)
         console.print(Text.assemble(tag, name_part, desc))
 
-    core = _MODULE_ROWS[:9]
-    cidr_only = _MODULE_ROWS[9:]
+    core = _MODULE_ROWS[:12]
+    cidr_only = _MODULE_ROWS[12:]
 
     for mid, key, title, blurb in core:
         _line(mid, key, title, blurb)
@@ -338,6 +344,30 @@ def _prompt_harvester_options(cfg: dict[str, Any]) -> None:
         console.print()
     tok = (s_raw.strip() or "y").lower().split()[0] if s_raw.strip() else "y"
     cfg["save_files"] = tok not in ("n", "no", "0")
+
+
+def _prompt_subfinder_options(cfg: dict[str, Any]) -> None:
+    """When Subfinder is selected: wall-clock budget (passive OSINT)."""
+    default_s = int(getattr(app_config, "SUBFINDER_TIMEOUT", 300))
+    console.print()
+    console.print(Text(" [SUBFINDER] Runtime", style=f"bold {C_PRI}"))
+    console.print(
+        Text(
+            "   Passive OSINT (CT logs, public sources) — no active DNS brute.",
+            style=C_DIM,
+        )
+    )
+    console.print()
+    t_raw = _safe_input(f"   Max seconds [default: {default_s}]: ")
+    if not sys.stdin.isatty():
+        console.print()
+    try:
+        cfg["subfinder_timeout_s"] = max(
+            30, int((t_raw.strip() or str(default_s)).split()[0])
+        )
+    except ValueError:
+        console.print(Text("   [!] Invalid — using default", style=C_WARN))
+        cfg["subfinder_timeout_s"] = default_s
 
 
 def _prompt_dir_enum_scan_mode(cfg: dict[str, Any]) -> None:
@@ -471,6 +501,9 @@ def _prompt_config(selected: list[tuple[int, str, str]]) -> dict[str, Any]:
 
     if any(key == "harvest" for _, key, _ in selected):
         _prompt_harvester_options(cfg)
+
+    if any(key == "subfinder" for _, key, _ in selected):
+        _prompt_subfinder_options(cfg)
 
     if any(key == "sniff" for _, key, _ in selected):
         console.print()
@@ -683,6 +716,31 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
             f"KEV {sm.get('in_cisa_kev', 0)} · "
             f"{res.get('targets_checked', 0)} targets"
         )
+    if mod == "waf_detect":
+        if res.get("waf_detected"):
+            w = res.get("waf") or {}
+            bc = sum(1 for p in (res.get("probes") or []) if p.get("blocked"))
+            return f"{w.get('name', '?')} · {bc}/{len(res.get('probes') or [])} probes blocked"
+        return "no WAF fingerprint"
+    if mod == "url_harvester":
+        stt = res.get("stats") or {}
+        return (
+            f"{stt.get('after_dedup', 0)} unique · "
+            f"{stt.get('total_collected', 0)} raw · "
+            f"{stt.get('duration_s', 0)}s"
+        )
+    if mod == "subfinder_enum":
+        st = res.get("status")
+        if st == "not_installed":
+            return "subfinder not installed"
+        if st == "skipped":
+            return None
+        stt = res.get("stats") or {}
+        return (
+            f"{stt.get('total_found', 0)} hosts · "
+            f"{stt.get('new_vs_wordlist', 0)} only-subfinder · "
+            f"{stt.get('duration_s', 0)}s"
+        )
     return None
 
 
@@ -696,6 +754,12 @@ def _run_modules_styled(
     rows: list[dict[str, Any]] = []
     raw_by_module: dict[str, Any] = {}
     for mid, key, title in modules:
+        if key == "subfinder":
+            prev = raw_by_module.get("subdomain_enum")
+            if isinstance(prev, dict) and prev.get("status") == "success":
+                cfg["subdomain_enum_results"] = prev
+            else:
+                cfg.pop("subdomain_enum_results", None)
         console.print(
             Text.assemble(
                 (" [►] Running ", C_PRI),
@@ -703,6 +767,8 @@ def _run_modules_styled(
             )
         )
         res = run_module(key, target, cfg)
+        if key == "subfinder":
+            cfg.pop("subdomain_enum_results", None)
         mod_id = str(res.get("module") or key)
         raw_by_module[mod_id] = res
         if session_logger:
@@ -764,6 +830,20 @@ def _run_modules_styled(
             elif status == "error":
                 pass
             # Rich output from packet_sniffer.run()
+        elif res.get("module") == "waf_detect":
+            if status == "skipped":
+                console.print(Text("     → skipped (CIDR not supported)", style=C_WARN))
+            # Rich output from waf_detect.run()
+        elif res.get("module") == "url_harvester":
+            if status == "skipped":
+                console.print(Text("     → skipped (domain only)", style=C_WARN))
+            # Rich output from url_harvester.run()
+        elif res.get("module") == "subfinder_enum":
+            if status == "skipped":
+                console.print(Text("     → skipped (domain only)", style=C_WARN))
+            elif status == "not_installed":
+                console.print(Text("     → subfinder not on PATH", style=C_WARN))
+            # Rich output from subfinder_enum.run()
         elif status == "pending":
             console.print(
                 Text("     → not implemented yet (stub)", style=C_DIM)

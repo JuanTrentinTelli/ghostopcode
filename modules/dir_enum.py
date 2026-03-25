@@ -39,6 +39,7 @@ from config import (
     WORDLIST_DIRS_FAST,
     WORDLIST_DIRS_SMALL,
 )
+from utils.output import display_findings
 from utils.target_parser import Target
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1125,6 +1126,14 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["stats"]["duration_s"] = round(duration, 2)
         base["stats"]["req_per_sec"] = round(rps, 1)
         base["status"] = "success"
+
+        critical_paths = [f for f in found_list if f.get("risk") == "CRITICAL"]
+        if critical_paths:
+            display_findings(
+                critical_paths,
+                module="dir_enum",
+                verbose=verbose,
+            )
 
         _print_results_table(found_list)
 
