@@ -1,14 +1,73 @@
-.venv/
-venv/
+# ═══════════════════════════════════════════════
+#  GhostOpcode — .gitignore
+# ═══════════════════════════════════════════════
+
+# Output de sessões — NUNCA subir resultados de recon
+output/
+
+# Wordlists — arquivos grandes, usar wordlists do sistema
+wordlists/
+
+# Arquivos baixados pelo harvester
+files/
+
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyo
+.Python
+*.egg
 *.egg-info/
-.eggs/
 dist/
 build/
-output/
+.eggs/
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+ENV/
+
+# Variáveis de ambiente — NUNCA subir secrets
 .env
-*.log
-.DS_Store
-.idea/
+.env.local
+.env.production
+*.env
+
+# IDEs
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Logs locais
+*.log
+session.log
+
+# Hashcat potfiles
+*.pot
+hashcat.potfile
+
+# Arquivos temporários
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Certificados e chaves — NUNCA subir
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_ed25519

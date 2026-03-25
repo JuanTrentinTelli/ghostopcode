@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GhostOpcode — {{ session.target | e }}</title>
+  <style>
+    :root {
+      --bg-primary:   #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary:  #21262d;
+      --accent:       #00FF41;
+      --critical:     #ff4444;
+      --high:         #ffa500;
+      --medium:       #ffcc00;
+      --low:          #58a6ff;
+      --text:         #e6edf3;
+      --muted:        #8b949e;
+      --border:       #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text);
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    code, .mono { font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace; font-size: 0.88em; }
+    a { color: var(--low); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header {
+      background: linear-gradient(160deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 2rem 1.75rem 1.75rem;
+    }
+    .ascii-art {
+      color: var(--accent);
+      font-size: 0.55rem;
+      line-height: 1.15;
+      white-space: pre;
+      margin: 0 0 1rem;
+      opacity: 0.92;
+      overflow-x: auto;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.65rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.02em;
+    }
+    .meta {
+      margin-top: 0.85rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+    }
+    .meta .target { color: var(--text); font-weight: 600; }
+    .badge-row { margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .badge-module {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    main { max-width: 1180px; margin: 0 auto; padding: 1.75rem 1.25rem 3rem; }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 1.25rem;
+    }
+    .stat-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 0.75rem;
+      text-align: center;
+    }
+    .stat-card .number {
+      font-size: 1.85rem;
+      font-weight: 800;
+      font-family: ui-monospace, monospace;
+      line-height: 1.1;
+    }
+    .stat-card .label {
+      font-size: 0.68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 0.35rem;
+    }
+    .stat-card.critical .number { color: var(--critical); }
+    .stat-card.high .number { color: var(--high); }
+    .stat-card.medium .number { color: var(--medium); }
+    .stat-card.low .number { color: var(--low); }
+    .stat-card.signals .number { color: var(--accent); }
+
+    .risk-bar-wrap {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .risk-bar-wrap h3 {
+      margin: 0 0 0.65rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .bar {
+      display: flex;
+      height: 12px;
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--bg-tertiary);
+    }
+    .bar > div { height: 100%; min-width: 0; transition: width 0.3s ease; }
+    .bar .critical { background: var(--critical); }
+    .bar .high { background: var(--high); }
+    .bar .medium { background: var(--medium); }
+    .bar .low { background: var(--low); }
+    .bar .info { background: var(--muted); }
+    .risk-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 0.65rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    section.module {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.35rem 1.35rem 1.5rem;
+      margin-bottom: 1.35rem;
+    }
+    section.module h2 {
+      margin: 0 0 0.85rem;
+      font-size: 1.12rem;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.45rem;
+    }
+    section.module h3 {
+      margin: 1.1rem 0 0.5rem;
+      font-size: 0.95rem;
+      color: var(--text);
+    }
+    .status-pill {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      background: var(--bg-tertiary);
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .muted { color: var(--muted); font-size: 0.88rem; }
+
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+    table.data th, table.data td {
+      text-align: left;
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }
+    table.data th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    table.data tbody tr:hover td { background: rgba(0, 255, 65, 0.035); }
+
+    .badge {
+      display: inline-block;
+      padding: 0.12rem 0.42rem;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .badge.critical { background: rgba(255,68,68,0.22); color: var(--critical); }
+    .badge.high { background: rgba(255,165,0,0.18); color: var(--high); }
+    .badge.medium { background: rgba(255,204,0,0.15); color: var(--medium); }
+    .badge.low { background: rgba(88,166,255,0.18); color: var(--low); }
+    .badge.info { background: var(--bg-tertiary); color: var(--muted); }
+
+    .alert {
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin: 0.65rem 0;
+      border-left: 4px solid var(--muted);
+      background: var(--bg-tertiary);
+      font-size: 0.9rem;
+    }
+    .alert.critical { border-left-color: var(--critical); background: rgba(255,68,68,0.08); }
+    .alert.high { border-left-color: var(--high); background: rgba(255,165,0,0.08); }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+    @media (max-width: 820px) { .two-col { grid-template-columns: 1fr; } }
+
+    dl.kv {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 0.35rem 0.75rem;
+      font-size: 0.88rem;
+    }
+    dl.kv dt { color: var(--muted); margin: 0; }
+    dl.kv dd { margin: 0; }
+
+    .intel .badge { margin: 0.15rem 0.25rem 0.15rem 0; }
+
+    .json-dump {
+      font-size: 0.72rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 75vh;
+      overflow: auto;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+      margin: 0.35rem 0 0;
+    }
+    details.json-raw { margin-top: 1rem; }
+    details.json-raw > summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 0.82rem;
+      user-select: none;
+    }
+    .cell-long {
+      max-width: min(560px, 100%);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    ul.compact { margin: 0.35rem 0; padding-left: 1.2rem; font-size: 0.86rem; color: var(--muted); }
+
+    footer {
+      text-align: center;
+      padding: 2rem 1rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+      border-top: 1px solid var(--border);
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+<pre class="ascii-art"> ██████╗ ██╗  ██╗ ██████╗ ███████╗████████╗ ██████╗ ██████╗  ██████╗ ██████╗ ███████╗
+██╔════╝ ██║  ██║██╔═══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗██╔═══██╗██╔══██╗██╔════╝
+██║  ███╗███████║██║   ██║███████╗   ██║   ██║   ██║██████╔╝██║   ██║██║  ██║█████╗
+██║   ██║██╔══██║██║   ██║╚════██║   ██║   ██║   ██║██╔═══╝ ██║   ██║██║  ██║██╔══╝
+╚██████╔╝██║  ██║╚██████╔╝███████║   ██║   ╚██████╔╝██║     ╚██████╔╝██████╔╝███████╗
+ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝ ╚═╝      ╚═════╝ ╚═════╝ ╚══════╝</pre>
+  <h1>Relatório de reconhecimento</h1>
+  <div class="meta">
+    <span><strong>Alvo:</strong> <span class="mono target">{{ session.target | e }}</span></span>
+    <span><strong>Tipo:</strong> {{ session.target_type | e }}</span>
+    <span><strong>Início:</strong> {{ session.timestamp | e }}</span>
+    <span><strong>Duração:</strong> {{ session.duration | e }}</span>
+  </div>
+  <div class="badge-row">
+    {% for mod in session.modules_run %}
+    <span class="badge-module">{{ module_labels.get(mod, mod) | e }}</span>
+    {% endfor %}
+  </div>
+</header>
+
+<main>
+
+<section class="risk-bar-wrap" style="margin-top:0">
+  <h3>Resumo executivo</h3>
+  <div class="summary">
+    <div class="stat-card signals"><div class="number">{{ summary.total_findings }}</div><div class="label">Sinais</div></div>
+    <div class="stat-card critical"><div class="number">{{ summary.critical }}</div><div class="label">Critical</div></div>
+    <div class="stat-card high"><div class="number">{{ summary.high }}</div><div class="label">High</div></div>
+    <div class="stat-card medium"><div class="number">{{ summary.medium }}</div><div class="label">Medium</div></div>
+    <div class="stat-card low"><div class="number">{{ summary.low }}</div><div class="label">Low</div></div>
+    <div class="stat-card"><div class="number">{{ session.modules_run | length }}</div><div class="label">Módulos</div></div>
+  </div>
+  <h3>Distribuição por severidade (risk_summary)</h3>
+  <div class="bar">
+    <div class="critical" style="width: {{ summary.critical_pct }}%" title="Critical"></div>
+    <div class="high" style="width: {{ summary.high_pct }}%" title="High"></div>
+    <div class="medium" style="width: {{ summary.medium_pct }}%" title="Medium"></div>
+    <div class="low" style="width: {{ summary.low_pct }}%" title="Low"></div>
+    <div class="info" style="width: {{ summary.info_pct }}%" title="Info"></div>
+  </div>
+  <div class="risk-legend">
+    <span>Critical {{ summary.critical }} ({{ summary.critical_pct }}%)</span>
+    <span>High {{ summary.high }} ({{ summary.high_pct }}%)</span>
+    <span>Medium {{ summary.medium }} ({{ summary.medium_pct }}%)</span>
+    <span>Low {{ summary.low }} ({{ summary.low_pct }}%)</span>
+    {% if summary.info %}<span>Info {{ summary.info }} ({{ summary.info_pct }}%)</span>{% endif %}
+  </div>
+</section>
+
+{# --- DNS --- #}
+{% if results.get('dns_recon') and results.dns_recon.status != 'skipped' %}
+<section class="module" id="dns">
+  <h2>DNS Recon</h2>
+  <span class="status-pill">Status: {{ results.dns_recon.status | e }}</span>
+  {% if results.dns_recon.get('error') %}<p class="muted">{{ results.dns_recon.error | e }}</p>{% endif %}
+  {% set dns_errors = results.dns_recon.errors | default([]) %}
+  {% if dns_errors %}
+  <h3>Erros / avisos</h3>
+  <ul class="compact">{% for e in dns_errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="muted">Total de registos: <strong>{{ results.dns_recon.total_records | default(0) }}</strong></p>
+  {% set ax = results.dns_recon.axfr | default({}) %}
+  <h3>AXFR (zone transfer)</h3>
+  <dl class="kv">
+    <dt>Tentado</dt><dd>{{ ax.attempted | default(false) }}</dd>
+    <dt>Vulnerável</dt><dd>{{ ax.vulnerable | default(false) }}</dd>
+    <dt>Nameservers tentados</dt><dd class="cell-long">{{ (ax.nameservers_tried | default([])) | join(', ') | e }}</dd>
+  </dl>
+  {% if ax.get('vulnerable') %}
+  <div class="alert critical"><strong>ZONE TRANSFER (AXFR) VULNERÁVEL</strong></div>
+  {% endif %}
+  {% set dump = ax.dump | default([]) %}
+  {% if dump %}
+  <h4>Dump AXFR ({{ dump | length }} linhas)</h4>
+  <pre class="mono json-dump" style="max-height:45vh">{{ dump | join('\n') | e }}</pre>
+  {% endif %}
+  {% set rec = results.dns_recon.records | default({}) %}
+  <h3>Registos DNS</h3>
+  <table class="data">
+    <thead><tr><th>Tipo</th><th>Valor</th><th>Detalhe</th></tr></thead>
+    <tbody>
+    {% for ip in rec.A | default([]) %}
+      <tr><td>A</td><td class="mono">{{ ip | e }}</td><td>IPv4</td></tr>
+    {% endfor %}
+    {% for ip in rec.AAAA | default([]) %}
+      <tr><td>AAAA</td><td class="mono">{{ ip | e }}</td><td>IPv6</td></tr>
+    {% endfor %}
+    {% for mx in rec.MX | default([]) %}
+      <tr><td>MX</td><td class="mono">{{ mx.host | default(mx) | e }}</td><td>prio {{ mx.priority | default('—') }}</td></tr>
+    {% endfor %}
+    {% for ns in rec.NS | default([]) %}
+      <tr><td>NS</td><td class="mono">{{ ns | e }}</td><td>—</td></tr>
+    {% endfor %}
+    {% for t in rec.TXT | default([]) %}
+      <tr><td>TXT</td><td class="mono cell-long">{{ t | e }}</td><td>—</td></tr>
+    {% endfor %}
+    {% for c in rec.CNAME | default([]) %}
+      <tr><td>CNAME</td><td class="mono">{{ c | e }}</td><td>—</td></tr>
+    {% endfor %}
+    {% set soa = rec.SOA | default({}) %}
+    {% if soa %}
+      <tr><td>SOA</td><td class="mono cell-long" colspan="2">mname={{ soa.mname | default('') | e }} · rname={{ soa.rname | default('') | e }} · serial={{ soa.serial | default('') }}</td></tr>
+    {% endif %}
+    {% for s in rec.SRV | default([]) %}
+      <tr><td>SRV</td><td class="mono cell-long">{{ s | e }}</td><td>—</td></tr>
+    {% endfor %}
+    {% for c in rec.CAA | default([]) %}
+      <tr><td>CAA</td><td class="mono cell-long">{{ c | e }}</td><td>—</td></tr>
+    {% endfor %}
+    {% for p in rec.PTR | default([]) %}
+      <tr><td>PTR</td><td class="mono">{{ p | e }}</td><td>—</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% set tech = results.dns_recon.technologies | default([]) %}
+  {% if tech %}
+  <div class="intel"><strong>Tecnologias inferidas (DNS):</strong>
+    {% for t in tech %}<span class="badge info">{{ t | string | e }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — DNS Recon</summary>{{ results.dns_recon | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Subdomains --- #}
+{% if results.get('subdomain_enum') and results.subdomain_enum.status != 'skipped' %}
+<section class="module" id="subs">
+  <h2>Enumeração de subdomínios</h2>
+  <span class="status-pill">Status: {{ results.subdomain_enum.status | e }}</span>
+  {% set sub_stats = results.subdomain_enum.stats | default({}) %}
+  {% set wc = results.subdomain_enum.wildcard | default({}) %}
+  <p class="muted">Resolvidos: {{ sub_stats.resolved | default((results.subdomain_enum.found | default([])) | length) }} · filtrados (wildcard): {{ sub_stats.filtered | default('—') }} · wordlist: {{ sub_stats.wordlist_size | default('—') }} · duração: {{ sub_stats.duration_s | default('—') }}s · req/s: {{ sub_stats.req_per_sec | default('—') }}</p>
+  <p class="muted">Wildcard DNS: {% if wc.detected %}detetado → <span class="mono">{{ wc.ip | default('?') | e }}</span>{% else %}não detetado{% endif %}</p>
+  {% set cat = results.subdomain_enum.categories | default({}) %}
+  <h3>Categorias por risco (FQDN)</h3>
+  {% for risk in ['CRITICAL','HIGH','MEDIUM','LOW'] %}
+    {% set lst = cat.get(risk, []) %}
+    {% if lst %}
+    <h4>{{ risk }} ({{ lst | length }})</h4>
+    <p class="intel">{% for fq in lst %}<span class="badge info mono">{{ fq | e }}</span> {% endfor %}</p>
+    {% endif %}
+  {% endfor %}
+  <h3>Subdomínios (detalhe)</h3>
+  <table class="data">
+    <thead><tr><th>FQDN</th><th>Sub</th><th>IPs</th><th>CNAME</th><th>Categoria</th><th>Risco</th><th>Takeover</th></tr></thead>
+    <tbody>
+    {% for sub in results.subdomain_enum.found | default([]) %}
+      <tr>
+        <td class="mono">{{ sub.fqdn | default(sub.host | default(sub)) | string | e }}</td>
+        <td class="mono">{{ sub.subdomain | default('—') | e }}</td>
+        <td class="cell-long">{{ (sub.ips | default([])) | join(', ') | e }}</td>
+        <td class="mono cell-long">{{ sub.cname | default('—') | e }}</td>
+        <td>{{ sub.category | default('—') | e }}</td>
+        <td>{% set rk = sub.risk | default('INFO') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+        <td>{% if sub.takeover %}<span class="badge high">sim</span>{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% set toc = results.subdomain_enum.takeover_candidates | default([]) %}
+  {% if toc %}
+  <h3>Candidatos a takeover / dangling</h3>
+  <table class="data">
+    <thead><tr><th>FQDN</th><th>CNAME</th><th>Nota</th></tr></thead>
+    <tbody>
+    {% for t in toc %}
+      <tr>
+        <td class="mono">{{ t.fqdn | default(t.host | default('—')) | e }}</td>
+        <td class="mono cell-long">{{ t.cname | default('—') | e }}</td>
+        <td class="cell-long">{{ t.note | default('—') | e }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if results.subdomain_enum.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.subdomain_enum.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Subdomain enum</summary>{{ results.subdomain_enum | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- WHOIS --- #}
+{% if results.get('whois_scan') and results.whois_scan.status not in ['skipped'] %}
+<section class="module" id="whois">
+  <h2>WHOIS + Fingerprint HTTP</h2>
+  <span class="status-pill">Status: {{ results.whois_scan.status | e }}</span>
+  {% if results.whois_scan.get('error') %}<p class="muted">{{ results.whois_scan.error | e }}</p>{% endif %}
+  {% set w = results.whois_scan.whois | default({}) %}
+  <div class="two-col">
+    <div>
+      <h3>WHOIS (domínio ou IP)</h3>
+      <dl class="kv">
+        <dt>Alvo</dt><dd class="mono">{{ w.domain_name | default(w.ip | default('—')) | string | e }}</dd>
+        <dt>Registrar</dt><dd>{{ w.registrar | default('—') | string | e }}</dd>
+        <dt>Organização</dt><dd>{{ w.org | default('—') | string | e }}</dd>
+        <dt>Responsável</dt><dd>{{ w.responsible | default('—') | string | e }}</dd>
+        <dt>Emails</dt><dd class="cell-long">{{ (w.emails | default([])) | join(', ') | e }}</dd>
+        <dt>ASN / ISP</dt><dd>{{ w.asn | default('—') | e }} {% if w.asn_org %}· {{ w.asn_org | e }}{% endif %}{% if w.isp %} / {{ w.isp | e }}{% endif %}</dd>
+        <dt>Abuse</dt><dd>{{ w.abuse_email | default('—') | e }}</dd>
+        <dt>País / Cidade</dt><dd>{{ w.country | default('—') | e }}{% if w.city %} · {{ w.city | e }}{% endif %}</dd>
+        <dt>Range IP</dt><dd class="mono">{{ w.ip_range | default('—') | e }}</dd>
+        <dt>Registrado</dt><dd>{{ w.registered_on | default('—') | string | e }}</dd>
+        <dt>Atualizado</dt><dd>{{ w.updated_on | default('—') | string | e }}</dd>
+        <dt>Expira</dt><dd>{{ w.expires_on | default('—') | string | e }} {% if w.days_to_expire is not none %}({{ w.days_to_expire }} dias){% endif %}</dd>
+        <dt>Estado(s)</dt><dd class="cell-long">{{ (w.status | default([])) | join('; ') | e }}</dd>
+        <dt>NS</dt><dd class="cell-long">{{ (w.nameservers | default([])) | join(', ') | e }}</dd>
+        <dt>Privacy guard</dt><dd>{{ w.privacy_guard | default(false) }}</dd>
+        <dt>Erro WHOIS</dt><dd>{{ w.error | default(false) }} {% if w.error_message %}{{ w.error_message | e }}{% endif %}</dd>
+      </dl>
+      {% if w.raw %}
+      <details class="json-raw"><summary>WHOIS raw (pré-visualização)</summary><pre class="mono json-dump">{{ (w.raw | string)[:25000] | e }}{% if (w.raw | string | length) > 25000 %}…{% endif %}</pre></details>
+      {% endif %}
+    </div>
+    <div>
+      <h3>HTTP / SSL / tecnologias</h3>
+      {% set http = results.whois_scan.http | default({}) %}
+      <dl class="kv">
+        <dt>Alcançável</dt><dd>{{ http.reachable | default(false) }}</dd>
+        <dt>Protocolo</dt><dd>{{ http.protocol | default('—') | e }}</dd>
+        <dt>HTTP status</dt><dd>{{ http.status_code | default('—') }} {{ http.status_reason | default('') | e }}</dd>
+        <dt>URL final</dt><dd class="mono cell-long">{{ http.final_url | default('—') | e }}</dd>
+      </dl>
+      {% if http.redirect_chain %}
+      <h4>Cadeia de redirects</h4>
+      <ul class="compact">{% for u in http.redirect_chain %}<li class="mono">{{ u | e }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% set ssl = http.ssl | default({}) %}
+      <dl class="kv" style="margin-top:0.75rem">
+        <dt>Emissor</dt><dd class="cell-long">{{ ssl.issuer | default('—') | string | e }}</dd>
+        <dt>Expira SSL</dt><dd>{{ ssl.expires_on | default(ssl.not_after | default('—')) | string | e }}</dd>
+        <dt>SANs</dt><dd class="cell-long">{{ (ssl.sans | default([])) | join(', ') | e }}</dd>
+      </dl>
+      <div class="intel" style="margin-top:0.75rem"><strong>Tecnologias (flat):</strong>
+        {% for tech in results.whois_scan.technologies | default([]) %}
+        <span class="badge info">{{ tech | string | e }}</span>
+        {% endfor %}
+      </div>
+      <details class="json-raw"><summary>Cabeçalhos HTTP</summary>{{ http.headers | default({}) | json_pretty }}</details>
+      <details class="json-raw"><summary>Cookies</summary>{{ http.cookies | default({}) | json_pretty }}</details>
+      <details class="json-raw"><summary>tech_stack (estruturado)</summary>{{ results.whois_scan.tech_stack | default({}) | json_pretty }}</details>
+    </div>
+  </div>
+  {% set flags = results.whois_scan.security_flags | default([]) %}
+  {% if flags %}
+  <h3>Security flags</h3>
+  <table class="data"><thead><tr><th>Severidade</th><th>Problema</th><th>Detalhe</th></tr></thead><tbody>
+    {% for flag in flags %}
+    <tr>
+      <td>{% set sev = flag.severity | default('LOW') %}<span class="badge {{ sev | lower | e }}">{{ sev | e }}</span></td>
+      <td>{{ flag.message | default(flag.title | default(flag | string)) | e }}</td>
+      <td class="cell-long">{% if flag.detail %}{{ flag.detail | e }}{% elif flag.code is defined %}{{ flag.code | e }}{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% if results.whois_scan.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.whois_scan.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — WHOIS scan</summary>{{ results.whois_scan | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Ports --- #}
+{% if results.get('port_scan') and results.port_scan.status != 'skipped' %}
+<section class="module" id="ports">
+  <h2>Port Scan</h2>
+  <span class="status-pill">Status: {{ results.port_scan.status | e }}</span>
+  {% if results.port_scan.get('error') %}<p class="muted">{{ results.port_scan.error | e }}</p>{% endif %}
+  <p class="muted">Host IP: <span class="mono">{{ results.port_scan.host_ip | default(results.port_scan.target | default('—')) | e }}</span></p>
+  {% set pst = results.port_scan.stats | default({}) %}
+  <dl class="kv">
+    <dt>Portas abertas</dt><dd>{{ pst.open | default('—') }}</dd>
+    <dt>Testadas</dt><dd>{{ pst.total_scanned | default('—') }}</dd>
+    <dt>Fechadas</dt><dd>{{ pst.closed | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ pst.duration_s | default('—') }}s</dd>
+    <dt>Req/s (connect)</dt><dd>{{ pst.req_per_sec | default('—') }}</dd>
+  </dl>
+  {% set osi = results.port_scan.os_inference | default({}) %}
+  <h3>Inferência de SO</h3>
+  <dl class="kv">
+    <dt>OS</dt><dd><strong>{{ osi.os | default('—') | e }}</strong></dd>
+    <dt>Confiança</dt><dd>{{ osi.confidence | default('—') | e }}</dd>
+  </dl>
+  {% set ev = osi.evidence | default([]) %}
+  {% if ev %}
+  <ul class="compact">{% for line in ev %}<li>{{ line | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% set prs = results.port_scan.risk_summary | default({}) %}
+  {% if prs %}
+  <h3>risk_summary</h3>
+  {% for rk, items in prs | dictsort %}
+    {% if items %}
+    <h4>{{ rk }}</h4>
+    <p class="mono muted cell-long">{{ items | join(', ') | e }}</p>
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+  <table class="data">
+    <thead><tr><th>Porta</th><th>Serviço</th><th>Produto</th><th>Versão</th><th>Banner</th><th>Vetores</th><th>CVE hints</th><th>Nota</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for p in results.port_scan.ports | default([]) %}
+      <tr>
+        <td class="mono">{{ p.port | default('—') }}/tcp</td>
+        <td>{{ p.service | default('—') | e }}</td>
+        <td>{{ p.product | default('—') | string | e }}</td>
+        <td class="mono">{{ p.version | default('—') | string | e }}</td>
+        <td class="mono cell-long">{{ p.banner | default('—') | string | e }}</td>
+        <td class="cell-long">{{ (p.vectors | default([])) | join(' · ') | e }}</td>
+        <td class="cell-long">{{ (p.cve_hints | default([])) | join(' · ') | e }}</td>
+        <td class="cell-long">{{ p.note | default('—') | string | e }}</td>
+        <td>{% set rk = p.risk | default('INFO') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <details class="json-raw"><summary>JSON completo — Port scan</summary>{{ results.port_scan | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Dirs --- #}
+{% if results.get('dir_enum') and results.dir_enum.status != 'skipped' %}
+<section class="module" id="dirs">
+  <h2>Directory enumeration</h2>
+  <span class="status-pill">Status: {{ results.dir_enum.status | e }}</span>
+  {% if results.dir_enum.get('error') %}<p class="muted">{{ results.dir_enum.error | e }}</p>{% endif %}
+  {% set de_stats = results.dir_enum.stats | default({}) %}
+  <p class="muted">Encontrados: <strong>{{ de_stats.found | default((results.dir_enum.found | default([])) | length) }}</strong> · testados: {{ de_stats.paths_tested | default('—') }} · filtrados: {{ de_stats.filtered | default('—') }} · duração: {{ de_stats.duration_s | default('—') }}s · req/s: {{ de_stats.req_per_sec | default('—') }}</p>
+  {% set ca = results.dir_enum.catchall | default({}) %}
+  <p class="muted">Catch-all: {% if ca.detected %}<span class="badge high">detetado</span> — {{ ca.strategy | default('') | e }} (body {{ ca.body_length | default('?') }}){% else %}não detetado{% endif %}</p>
+  {% set gi = results.dir_enum.git_intel | default({}) %}
+  {% if gi and gi != {} %}
+  <h3>Git exposure intel</h3>
+  <dl class="kv">
+    <dt>Exposto</dt><dd>{{ gi.exposed | default(false) }}</dd>
+    <dt>Remote</dt><dd class="mono cell-long">{{ gi.remote | default('—') | e }}</dd>
+    <dt>Branch</dt><dd>{{ gi.branch | default('—') | e }}</dd>
+    <dt>Último commit</dt><dd class="cell-long">{{ gi.last_commit | default('—') | e }}</dd>
+  </dl>
+  {% if gi.errors %}<ul class="compact">{% for e in gi.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>{% endif %}
+  <details class="json-raw"><summary>git_intel (JSON)</summary>{{ gi | json_pretty }}</details>
+  {% endif %}
+  {% set drs = results.dir_enum.risk_summary | default({}) %}
+  {% if drs %}
+  <h3>risk_summary (caminhos)</h3>
+  {% for rk, paths in drs | dictsort %}
+    {% if paths %}
+    <h4>{{ rk }} ({{ paths | length }})</h4>
+    <pre class="mono json-dump" style="max-height:25vh">{{ paths | join('\n') | e }}</pre>
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+  <h3>Todos os caminhos encontrados</h3>
+  <table class="data">
+    <thead><tr><th>Caminho</th><th>URL</th><th>HTTP</th><th>Redirect</th><th>Tamanho</th><th>Categoria</th><th>Nota</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for item in results.dir_enum.found | default([]) %}
+      <tr>
+        <td class="mono">{{ item.path | default('—') | string | e }}</td>
+        <td class="mono cell-long"><a href="{{ item.url | e }}" target="_blank" rel="noopener">{{ item.url | default('—') | string | e }}</a></td>
+        <td>{{ item.status | default('—') | e }}</td>
+        <td class="mono cell-long">{{ item.redirect | default('—') | string | e }}</td>
+        <td>{{ item.size | default('—') | string | e }}</td>
+        <td>{{ item.category | default('—') | e }}</td>
+        <td class="cell-long">{{ item.note | default('—') | string | e }}</td>
+        <td>{% set rk = item.risk | default('INFO') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if results.dir_enum.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.dir_enum.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Dir enum</summary>{{ results.dir_enum | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Harvester --- #}
+{% if results.get('harvester') and results.harvester.status != 'skipped' %}
+<section class="module" id="harvest">
+  <h2>Harvester</h2>
+  <span class="status-pill">Status: {{ results.harvester.status | e }}</span>
+  {% if results.harvester.get('error') %}<p class="muted">{{ results.harvester.error | e }}</p>{% endif %}
+  <dl class="kv">
+    <dt>URLs crawled</dt><dd>{{ results.harvester.stats.urls_crawled | default('—') }}</dd>
+    <dt>Ficheiros</dt><dd>{{ results.harvester.stats.files_found | default('—') }}</dd>
+    <dt>Emails</dt><dd>{{ results.harvester.stats.emails_found | default('—') }}</dd>
+    <dt>Leaks</dt><dd>{{ results.harvester.stats.leaks_found | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ results.harvester.stats.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set intel = results.harvester.intelligence | default({}) %}
+  {% if intel %}
+  <h3>Correlação / intelligence</h3>
+  <dl class="kv">
+    <dt>Usernames (metadata + emails + LinkedIn)</dt><dd class="cell-long">{{ (intel.usernames | default([])) | join(', ') | e }}</dd>
+    <dt>Software stack</dt><dd class="cell-long">{{ (intel.software_stack | default([])) | join(', ') | e }}</dd>
+    <dt>Internal paths</dt><dd class="cell-long">{{ (intel.internal_paths | default([])) | join(', ') | e }}</dd>
+    <dt>Emails em documentos</dt><dd class="cell-long">{{ (intel.emails_in_docs | default([])) | join(', ') | e }}</dd>
+    <dt>Intervalo de datas (docs)</dt><dd>{% set cr = intel.creation_range | default([]) %}{% if cr | length >= 2 %}{{ cr[0] | e }} → {{ cr[1] | e }}{% else %}—{% endif %}</dd>
+    <dt>AD domain guess</dt><dd class="mono">{{ intel.ad_domain_guess | default('—') | e }}</dd>
+    <dt>Totais</dt><dd>emails: {{ intel.emails_total | default('—') }} · ficheiros: {{ intel.files_total | default('—') }} · leaks: {{ intel.leaks_total | default('—') }}</dd>
+  </dl>
+  {% set lip = intel.linkedin_profiles | default([]) %}
+  {% if lip %}
+  <h4>Perfis LinkedIn (handles / URLs)</h4>
+  <p class="intel">{% for h in lip %}<span class="badge info mono">{{ h | e }}</span> {% endfor %}</p>
+  {% endif %}
+  {% endif %}
+  {% set emails = results.harvester.emails | default([]) %}
+  {% if emails %}
+  <h3>Emails & identidades (todos)</h3>
+  <table class="data">
+    <thead><tr><th>Email / ID</th><th>LinkedIn</th><th>Nome</th><th>Função</th><th>Tipo</th><th>Origem</th></tr></thead>
+    <tbody>
+    {% for e in emails %}
+      <tr>
+        <td>{{ e.email | default(e.linkedin | default('—')) | e }}</td>
+        <td class="mono cell-long">{% if e.linkedin %}<a href="{{ e.linkedin | e }}" rel="noopener" target="_blank">{{ e.linkedin | e }}</a>{% else %}—{% endif %}</td>
+        <td>{{ e.name | default('—') | e }}</td>
+        <td>{{ e.role | default('—') | e }}</td>
+        <td>{{ e.kind | default('—') | e }}</td>
+        <td class="muted cell-long">{{ e.source | default('—') | e }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% set leaks = results.harvester.config_leaks | default([]) %}
+  {% for leak in leaks %}
+  <div class="alert {% if leak.confirmed %}critical{% else %}high{% endif %}">
+    <strong>{{ leak.path | e }}</strong> — HTTP {{ leak.status | default('—') }}{% if leak.confirmed is defined %} · confirmado: {{ leak.confirmed }}{% endif %}
+    {% if leak.secrets %}
+    <ul>
+      {% for s in leak.secrets %}
+      <li>{{ s.type | default('secret') | e }}{% if s.line %} (linha {{ s.line }}){% endif %}: <code class="cell-long">{{ s.value | default('') | e }}</code></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <details class="json-raw"><summary>Leak (JSON completo)</summary>{{ leak | json_pretty }}</details>
+  </div>
+  {% endfor %}
+  {% set files = results.harvester.files | default([]) %}
+  {% if files %}
+  <h3>Ficheiros ({{ files | length }}) — metadata completa</h3>
+  <table class="data">
+    <thead><tr><th>Ficheiro</th><th>Tipo</th><th>Tamanho</th><th>Descarregado</th><th>Risco</th><th>URL</th><th>Metadata (JSON)</th></tr></thead>
+    <tbody>
+    {% for f in files %}
+      <tr>
+        <td>{{ f.filename | default('—') | e }}</td>
+        <td>{{ f.type | default('—') | e }}</td>
+        <td>{{ f.size | default('—') | e }}</td>
+        <td>{{ f.downloaded | default(false) }}</td>
+        <td>{% set rk = f.risk | default('INFO') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+        <td class="mono cell-long">{% if f.url %}<a href="{{ f.url | e }}" target="_blank" rel="noopener">{{ f.url | e }}</a>{% else %}—{% endif %}</td>
+        <td class="cell-long">{{ (f.metadata | default({})) | json_pretty }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if results.harvester.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.harvester.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Harvester</summary>{{ results.harvester | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- HTTP methods --- #}
+{% if results.get('http_methods') and results.http_methods.status not in ['skipped'] %}
+<section class="module" id="methods">
+  <h2>HTTP Methods</h2>
+  <span class="status-pill">Status: {{ results.http_methods.status | e }}</span>
+  {% if results.http_methods.get('error') %}<p class="muted">{{ results.http_methods.error | e }}</p>{% endif %}
+  <p class="muted">Base URL: <span class="mono">{{ results.http_methods.base_url | default('—') | e }}</span></p>
+  {% set hst = results.http_methods.stats | default({}) %}
+  <dl class="kv">
+    <dt>Métodos testados</dt><dd>{{ hst.methods_tested | default('—') }}</dd>
+    <dt>Perigosos</dt><dd>{{ hst.dangerous | default('—') }}</dd>
+    <dt>Endpoints skip (catchall)</dt><dd>{{ hst.endpoints_skipped_catchall | default('—') }}</dd>
+    <dt>Endpoints limpos</dt><dd>{{ hst.endpoints_tested_clean | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ hst.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set crit = results.http_methods.critical_findings | default([]) %}
+  {% if crit %}
+  <div class="alert critical">{% for f in crit %}<div>⚠ {{ f | e }}</div>{% endfor %}</div>
+  {% endif %}
+  {% set cors = results.http_methods.cors | default({}) %}
+  <h3>CORS</h3>
+  <dl class="kv">
+    <dt>Misconfigured</dt><dd>{{ cors.misconfigured | default(false) }}</dd>
+    <dt>Tipo</dt><dd>{{ cors.type | default('—') | e }}</dd>
+    <dt>Risco</dt><dd>{{ cors.risk | default('—') | e }}</dd>
+    <dt>Detalhe</dt><dd class="cell-long">{{ cors.details | default('—') | e }}</dd>
+  </dl>
+  {% set wdv = results.http_methods.webdav | default({}) %}
+  <h3>WebDAV</h3>
+  <dl class="kv">
+    <dt>Ativo</dt><dd>{{ wdv.enabled | default(false) }}</dd>
+    <dt>Risco</dt><dd>{{ wdv.risk | default('—') | e }}</dd>
+  </dl>
+  {% set sec = results.http_methods.security_headers | default({}) %}
+  <h3>Cabeçalhos de segurança (audit)</h3>
+  <table class="data">
+    <thead><tr><th>Cabeçalho</th><th>Estado</th><th>Valor / nota</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for h in sec.missing | default([]) %}
+      <tr>
+        <td class="mono">{{ h.header | default(h.name | default(h)) | string | e }}</td>
+        <td><span class="badge critical">MISSING</span></td>
+        <td class="cell-long">{{ h.recommendation | default(h.note | default('—')) | e }}</td>
+        <td>{% set rk = h.risk | default('MEDIUM') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    {% for h in sec.present | default([]) %}
+      <tr>
+        <td class="mono">{{ h | string | e }}</td>
+        <td><span class="badge low">PRESENT</span></td>
+        <td>—</td>
+        <td>—</td>
+      </tr>
+    {% endfor %}
+    {% for h in sec.exposed | default([]) %}
+      <tr>
+        <td class="mono">{{ h.header | default(h.name | default('—')) | e }}</td>
+        <td><span class="badge high">EXPOSED</span></td>
+        <td class="mono cell-long">{{ h.value | default('—') | e }}</td>
+        <td>{% set rk = h.risk | default('HIGH') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% set hmrs = results.http_methods.risk_summary | default({}) %}
+  {% if hmrs %}
+  <h3>risk_summary</h3>
+  {% for rk, items in hmrs | dictsort %}
+    {% if items %}
+    <h4>{{ rk }}</h4>
+    <p class="mono muted cell-long">{{ items | join(' · ') | e }}</p>
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+  {% set csk = results.http_methods.catchall_skipped | default([]) %}
+  {% if csk %}
+  <h3>Endpoints ignorados (catch-all)</h3>
+  <table class="data">
+    <thead><tr><th>Endpoint</th><th>Detalhe</th></tr></thead>
+    <tbody>
+    {% for row in csk %}
+      <tr>
+        <td class="mono">{{ row.endpoint | default(row.path | default('—')) | e }}</td>
+        <td class="cell-long">{% if row.reason or row.note %}{{ row.reason | default(row.note) | e }}{% else %}{{ row | json_pretty }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% for ep, block in results.http_methods.methods | default({}) | dictsort %}
+  <h3 class="mono">{{ ep | e }}</h3>
+  <table class="data">
+    <thead><tr><th>Método</th><th>HTTP</th><th>Risco</th><th>Nota</th></tr></thead>
+    <tbody>
+    {% for meth, info in block.methods_tested | default({}) | dictsort %}
+      <tr>
+        <td>{{ meth | e }}</td>
+        <td>{{ info.status | default('—') }}</td>
+        {% set rk = info.risk | default('INFO') %}
+        <td><span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+        <td class="cell-long">{{ info.note | default('—') | string | e }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endfor %}
+  {% if results.http_methods.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.http_methods.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — HTTP methods</summary>{{ results.http_methods | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- JS recon --- #}
+{% if results.get('js_recon') and results.js_recon.status not in ['skipped'] %}
+<section class="module" id="js">
+  <h2>JS Recon</h2>
+  <span class="status-pill">Status: {{ results.js_recon.status | e }}</span>
+  {% if results.js_recon.get('error') %}<p class="muted">{{ results.js_recon.error | e }}</p>{% endif %}
+  <p class="muted">Base: <span class="mono">{{ results.js_recon.base_url | default('—') | e }}</span></p>
+  {% set jst = results.js_recon.stats | default({}) %}
+  <dl class="kv">
+    <dt>JS encontrados</dt><dd>{{ jst.js_files_found | default('—') }}</dd>
+    <dt>JS analisados</dt><dd>{{ jst.js_files_analyzed | default('—') }}</dd>
+    <dt>Endpoints</dt><dd>{{ jst.endpoints_found | default('—') }}</dd>
+    <dt>Secrets</dt><dd>{{ jst.secrets_found | default('—') }}</dd>
+    <dt>Source maps</dt><dd>{{ jst.source_maps_found | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ jst.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set jrs = results.js_recon.risk_summary | default({}) %}
+  {% if jrs %}
+  <h3>risk_summary</h3>
+  {% for rk, items in jrs | dictsort %}
+    {% if items %}
+    <h4>{{ rk }}</h4>
+    <p class="mono muted cell-long">{{ items | join(' · ') | e }}</p>
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+  {% set jf = results.js_recon.js_files | default([]) %}
+  {% if jf %}
+  <h3>Ficheiros JavaScript</h3>
+  <table class="data">
+    <thead><tr><th>URL</th><th>Tamanho</th><th>Analisado</th><th>Source map (resumo)</th></tr></thead>
+    <tbody>
+    {% for row in jf %}
+      <tr>
+        <td class="mono cell-long"><a href="{{ row.url | e }}" target="_blank" rel="noopener">{{ row.url | e }}</a></td>
+        <td>{{ row.size | default(row.size_bytes | default('—')) | e }}</td>
+        <td>{{ row.analyzed | default(false) }}</td>
+        <td class="cell-long">{% if row.source_map %}{{ row.source_map | json_pretty }}{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% set eps = results.js_recon.endpoints | default([]) %}
+  {% if eps %}
+  <h3>Endpoints ({{ eps | length }})</h3>
+  <table class="data">
+    <thead><tr><th>Endpoint</th><th>Método</th><th>Fonte</th><th>Categoria</th><th>Risco</th><th>Notas</th></tr></thead>
+    <tbody>
+    {% for ep in eps %}
+      <tr>
+        <td class="mono cell-long">{{ ep.url | e }}</td>
+        <td>{{ ep.method | default('—') | e }}</td>
+        <td>{{ ep.source | default('—') | e }}</td>
+        <td>{{ ep.category | default('—') | e }}</td>
+        <td>{% set rk = ep.risk | default('INFO') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+        <td class="cell-long">{{ ep.note | default(ep.details | default('—')) | string | e }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% for s in results.js_recon.secrets | default([]) %}
+  <div class="alert critical">{{ s.type | e }} em <span class="mono">{{ s.source | e }}</span>: <code class="cell-long">{{ s.value | e }}</code></div>
+  {% endfor %}
+  {% set sms = results.js_recon.source_maps | default([]) %}
+  {% if sms %}
+  <h3>Source maps</h3>
+  {% for sm in sms %}
+  <details class="json-raw"><summary><span class="mono">{{ sm.url | default('inline') | e }}</span> — {{ sm.sources_count | default(0) }} ficheiros{% if sm.has_content %} · <strong>código embutido</strong>{% endif %}</summary>{{ sm | json_pretty }}</details>
+  {% endfor %}
+  {% endif %}
+  {% if results.js_recon.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.js_recon.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — JS recon</summary>{{ results.js_recon | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Hash --- #}
+{% if results.get('hash_module') %}
+<section class="module" id="hash">
+  <h2>Hash module</h2>
+  <span class="status-pill">{{ results.hash_module.status | e }}</span>
+  <p class="mono muted">{{ results.hash_module.hash | default('') | e }}</p>
+  {% if results.hash_module.candidates %}
+  <table class="data">
+    <thead><tr><th>Algoritmo</th><th>Conf.</th><th>Hashcat</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for c in results.hash_module.candidates %}
+      <tr>
+        <td>{{ c.algorithm | e }}</td>
+        <td>{{ c.confidence | default('—') | e }}</td>
+        <td>{{ c.hashcat_mode | default('—') }}</td>
+        <td>{% set rk = c.risk | default('INFO') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% set cr = results.hash_module.crack_result | default({}) %}
+  {% if cr.cracked and cr.plaintext %}
+  <div class="alert high"><strong>Crack:</strong> <code>{{ cr.plaintext | e }}</code> ({{ cr.method | default('—') | e }})</div>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Hash module</summary>{{ results.hash_module | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- ARP --- #}
+{% if results.get('arp_scan') and results.arp_scan.status == 'success' %}
+<section class="module" id="arp">
+  <h2>ARP Scan</h2>
+  <p class="muted">{{ results.arp_scan.stats.hosts_found | default(0) }} hosts em {{ results.arp_scan.network | default(results.arp_scan.target | default('—')) | e }}</p>
+  <table class="data">
+    <thead><tr><th>IP</th><th>MAC</th><th>Vendor</th><th>Hostname</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for host in results.arp_scan.hosts | default([]) %}
+      <tr>
+        <td>{{ host.ip | e }}</td>
+        <td class="mono">{{ host.mac | e }}</td>
+        <td>{{ host.vendor | e }}</td>
+        <td>{{ host.hostname | default('—') | e }}</td>
+        <td>{% set rk = host.risk | default('LOW') %}<span class="badge {{ rk | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <details class="json-raw"><summary>JSON completo — ARP scan</summary>{{ results.arp_scan | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Sniffer --- #}
+{% if results.get('packet_sniffer') and results.packet_sniffer.status == 'success' %}
+<section class="module" id="sniff">
+  <h2>Packet sniffer</h2>
+  <p class="muted">{{ results.packet_sniffer.packets_captured | default(0) }} pacotes · {{ results.packet_sniffer.duration_elapsed_s | default(results.packet_sniffer.duration) | default('—') }}s</p>
+  {% set st = results.packet_sniffer.stats | default({}) %}
+  <dl class="kv">
+    <dt>DNS</dt><dd>{{ st.dns | default(0) }}</dd>
+    <dt>HTTP</dt><dd>{{ st.http | default(0) }}</dd>
+    <dt>HTTPS</dt><dd>{{ st.https | default(0) }}</dd>
+    <dt>Outros</dt><dd>{{ st.other | default(0) }}</dd>
+  </dl>
+  {% set fd = results.packet_sniffer.findings | default({}) %}
+  {% if fd.dns_queries %}
+  <h3>Consultas DNS (todas)</h3>
+  <p class="intel">{% for q in fd.dns_queries %}<span class="badge info">{{ q | e }}</span> {% endfor %}</p>
+  {% endif %}
+  {% if fd.http_hosts %}
+  <h3>Hosts HTTP</h3>
+  <p class="mono muted cell-long">{{ fd.http_hosts | join(', ') | e }}</p>
+  {% endif %}
+  {% if fd.cleartext_risk %}
+  <h3>Risco texto claro</h3>
+  {% for c in fd.cleartext_risk %}
+  <div class="alert high">{{ c.type | e }}: {{ c.detail | default('') | e }}</div>
+  {% endfor %}
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Packet sniffer</summary>{{ results.packet_sniffer | json_pretty }}</details>
+</section>
+{% endif %}
+
+{# --- Status de todos os módulos --- #}
+<section class="module" id="raw">
+  <h2>Estado bruto dos módulos</h2>
+  <table class="data">
+    <thead><tr><th>Módulo</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for name, data in results | dictsort %}
+      <tr>
+        <td class="mono">{{ module_labels.get(name, name) | e }}</td>
+        <td>{{ data.status | default('—') | e }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <details class="json-raw"><summary>JSON completo — objeto <code>results</code> (todos os módulos)</summary>{{ results | json_pretty }}</details>
+</section>
+
+</main>
+
+<footer>
+  <p><strong>GhostOpcode</strong> v{{ version | e }} — gerado em {{ generated | e }}</p>
+  <p>Apenas para alvos autorizados — use de forma responsável. Os autores não se responsabilizam por uso indevido.</p>
+</footer>
+
+</body>
+</html>

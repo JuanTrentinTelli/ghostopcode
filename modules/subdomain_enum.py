@@ -31,7 +31,12 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-from config import DEFAULT_THREADS, DEFAULT_TIMEOUT, WORDLIST_SUBDOMAINS
+from config import (
+    DEFAULT_THREADS,
+    DEFAULT_TIMEOUT,
+    WORDLIST_SUBDOMAINS,
+    count_lines,
+)
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -374,7 +379,10 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     threads = max(1, int(config.get("threads") or DEFAULT_THREADS))
     timeout = max(1, int(config.get("timeout") or DEFAULT_TIMEOUT))
     verbose = bool(config.get("verbose", False))
-    wordlist_path: str | None = config.get("wordlist") or WORDLIST_SUBDOMAINS
+    # Never use config["wordlist"] — hash module sets password lists there during RUN ALL.
+    wordlist_path: str | None = (
+        config.get("subdomain_wordlist") or WORDLIST_SUBDOMAINS
+    )
 
     base: dict[str, Any] = {
         "module": "subdomain_enum",
@@ -465,6 +473,35 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["error"] = f"Wordlist not found: {wl_path}"
         base["errors"].append(base["error"])
         return base
+
+    line_estimate = count_lines(str(wl_path))
+    if line_estimate > 100_000:
+        console.print(
+            Text(
+                f" [!] Wordlist has {line_estimate:,} lines — unusually large for "
+                f"subdomain brute-force (expected ~5k–20k).",
+                style=C_WARN,
+            )
+        )
+        console.print(
+            Text(
+                " [i] If this is a password list (e.g. rockyou), cancel and fix "
+                "WORDLIST_SUBDOMAINS / subdomain_wordlist in config.",
+                style=C_MUTED,
+            )
+        )
+        try:
+            confirm = input("  Continue anyway? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            confirm = "n"
+        if confirm != "y":
+            base["status"] = "skipped"
+            base["error"] = "Wordlist too large — aborted by operator"
+            base["errors"].append(base["error"])
+            console.print(
+                Text("  [SKIP] Subdomain enum cancelled (wordlist size).", style=C_WARN)
+            )
+            return base
 
     try:
         words = _load_wordlist(wl_path)

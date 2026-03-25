@@ -38,10 +38,10 @@ def count_lines(path: str) -> int:
 
 WORDLIST_SUBDOMAINS = resolve_wordlist(
     [
-        "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
         "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
-        "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
+        "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
         "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
+        "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
         "wordlists/subdomains-top1million.txt",
     ]
 )

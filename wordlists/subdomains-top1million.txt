@@ -1,6 +1,0 @@
-www
-mail
-api
-dev
-admin
-nonexistentzz123

@@ -16,7 +16,7 @@ _DOMAIN_MODULES = frozenset(
     {"dns", "subs", "whois", "ports", "dirs", "harvest", "methods", "js", "hash"}
 )
 _IP_MODULES = frozenset(
-    {"dns", "whois", "ports", "dirs", "harvest", "methods", "js", "hash"}
+    {"dns", "whois", "ports", "dirs", "harvest", "methods", "js", "hash", "sniff"}
 )
 _CIDR_MODULES = frozenset({"arp", "ports", "sniff"})
 
@@ -55,7 +55,7 @@ class Target:
 
         Compatibility:
           DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash
-          IP     → dns, whois, ports, dirs, harvest, methods, js, hash
+          IP     → dns, whois, ports, dirs, harvest, methods, js, hash, sniff
           CIDR   → arp, ports, sniff
         """
         key = module.lower().strip()
