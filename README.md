@@ -21,147 +21,145 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 ![Version](https://img.shields.io/badge/Version-1.3.1-orange?style=flat-square)
 
-> Framework de reconhecimento ofensivo — 100% local, zero APIs externas (exceto CVE lookup opcional)
+> Offensive reconnaissance framework — 100% local, no external APIs (optional CVE lookup via NVD only)
 
 </div>
 
 ---
 
-## O que é o GhostOpcode?
+## What is GhostOpcode?
 
-GhostOpcode é uma ferramenta de **reconhecimento ofensivo** (recon)
-desenvolvida para pentesters, estudantes de segurança e entusiastas de CTF.
+GhostOpcode is an **offensive reconnaissance** tool built for penetration testers,
+security students, and CTF enthusiasts.
 
-Ela automatiza a fase de coleta de informações antes de um pentest,
-reunindo em uma única interface interativa tudo que você precisa saber
-sobre um alvo — domínio, IP ou rede local.
-
-**Não requer argumentos** — basta rodar e seguir o menu interativo.
+It automates the information-gathering phase before a pentest, wrapping everything
+you need to know about a target — domain, IP, or local network — in one **interactive**
+CLI. **No command-line arguments required**; run it and follow the menu.
 
 ---
 
-## Funcionalidades
+## Features
 
-| # | Módulo | O que faz |
-|---|--------|-----------|
-| 1 | **DNS Recon** | Consulta registros A, MX, NS, TXT, SOA. Tenta zone transfer (AXFR). Detecta tecnologias via DNS. |
-| 2 | **Subdomain Enum** | Descobre subdomínios via wordlist + bruteforce. Detecta wildcard DNS e candidatos a subdomain takeover. |
-| 3 | **WHOIS + Fingerprint** | Dados de registro do domínio/IP. Detecta web server, CMS, CDN, linguagem backend via headers HTTP. Audita certificado SSL. |
-| 4 | **Port Scan** | Varredura TCP de portas (qualquer range). Identificação precisa de serviços via nmap -sV. Banner grabbing. Inferência de SO. |
-| 5 | **Dir Enum** | Bruteforce de diretórios e arquivos (Fast/Normal/Full). Detecta catchall HTTP. Categoriza findings por risco. |
-| 6 | **Harvester** | Rastreia o site e baixa PDFs, DOCs, XLS. Extrai emails, nomes, perfis LinkedIn. Escaneia arquivos sensíveis expostos (.env, .git, backups). Extrai metadata de documentos. |
-| 7 | **HTTP Methods** | Testa métodos HTTP perigosos (PUT, DELETE, TRACE). Detecta CORS misconfiguration. Audita security headers. |
-| 8 | **JS Recon** | Analisa arquivos JavaScript do alvo. Extrai endpoints de API hardcoded, secrets (AWS keys, tokens), e source maps expostos. |
-| 9 | **Hash Module** | Identifica o algoritmo de um hash. Tenta quebrar via wordlist local (rockyou). Integra com hashcat se disponível. |
-| A | **ARP Scan** | Descobre hosts ativos em rede local via ARP. Identifica fabricante pelo MAC address. Requer CIDR como alvo e root/sudo. |
-| S | **Packet Sniffer** | Captura tráfego de rede em tempo real. Analisa protocolos e extrai inteligência passiva. Requer root/sudo. |
-| ★ | **CVE Lookup** | Roda automaticamente após port scan. Consulta a NVD (National Vulnerability Database) com os serviços e versões encontrados. Retorna CVEs relevantes com CVSS score. |
+| # | Module | What it does |
+|---|--------|--------------|
+| 1 | **DNS Recon** | Queries A, MX, NS, TXT, SOA records. Attempts zone transfer (AXFR). Infers technologies from DNS. |
+| 2 | **Subdomain Enum** | Discovers subdomains via wordlist bruteforce. Detects wildcard DNS and subdomain takeover candidates. |
+| 3 | **WHOIS + Fingerprint** | Domain/IP registration data. Detects web server, CMS, CDN, and backend hints from HTTP headers. Audits SSL certificates. |
+| 4 | **Port Scan** | TCP port sweep (any range). Accurate service identification via **nmap -sV**. Banner grabbing. OS inference. |
+| 5 | **Dir Enum** | Directory and file bruteforce (Fast / Normal / Full). HTTP catch-all detection. Risk-bucketed findings. |
+| 6 | **Harvester** | Crawls the site and pulls PDFs, DOCs, XLS. Extracts emails, names, LinkedIn profiles. Scans for exposed sensitive files (.env, .git, backups). Document metadata extraction. |
+| 7 | **HTTP Methods** | Probes dangerous HTTP methods (PUT, DELETE, TRACE). CORS misconfiguration detection. Security header audit. |
+| 8 | **JS Recon** | Analyses target JavaScript. Extracts hardcoded API endpoints, secrets (AWS keys, tokens), and exposed source maps. |
+| 9 | **Hash Module** | Identifies hash algorithms. Local wordlist cracking (e.g. rockyou). Optional **hashcat** integration. |
+| A | **ARP Scan** | Finds live hosts on the LAN via ARP. Vendor identification from MAC. Requires a **CIDR** target and **root/sudo**. |
+| S | **Packet Sniffer** | Live traffic capture. Protocol parsing and passive intel. Requires **root/sudo**. |
+| ★ | **CVE Lookup** | Runs automatically after a port scan (when configured). Queries the **NVD** using discovered services and versions. Returns relevant CVEs with CVSS scores. |
 
 ---
 
-## Relatórios automáticos
+## Automatic reports
 
-Ao final de cada sessão, o GhostOpcode gera **3 arquivos automaticamente**:
+Every session writes **three artifacts** under `output/`:
 
 ```
 output/
-└── alvo_20260325_143022/
-    ├── report.json     # Dados completos estruturados
-    ├── report.html     # Relatório visual (abrir no browser)
-    └── session.log     # Log cronológico da sessão
+└── target_20260325_143022/
+    ├── report.json     # Structured machine-readable results
+    ├── report.html     # Visual report (open in a browser)
+    └── session.log     # Chronological session log
 ```
 
 ---
 
-## Requisitos
+## Requirements
 
 - **Python 3.10+**
-- **Linux** (Kali Linux recomendado)
-- **nmap** instalado no sistema
-- **Root/sudo** apenas para ARP scan e packet sniffer
+- **Linux** (Kali Linux recommended)
+- **nmap** installed on the system
+- **Root/sudo** only for ARP scan and packet sniffer
 
 ---
 
-## Instalação
+## Installation
 
-### 1. Clonar o repositório
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/JuanTrentinTelli/ghostopcode.git
 cd ghostopcode
 ```
 
-### 2. Instalar dependências Python
+### 2. Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Instalar wordlists (Kali Linux)
+### 3. Install wordlists (Kali Linux)
 
 ```bash
 sudo apt install seclists wordlists
 ```
 
-O GhostOpcode detecta automaticamente as wordlists do Kali.
-Se estiver em outra distro, veja a seção [Wordlists](#wordlists).
+GhostOpcode auto-detects standard Kali wordlist paths.
+On other distros, see [Wordlists](#wordlists).
 
-### 4. Instalar nmap
+### 4. Install nmap
 
 ```bash
 sudo apt install nmap
 ```
 
-### 5. (Opcional) Configurar CVE lookup
+### 5. (Optional) CVE lookup
 
 ```bash
-# Criar arquivo .env na raiz do projeto
-echo "NVD_API_KEY=sua-chave-aqui" > .env
+# Create a .env file at the project root
+echo "NVD_API_KEY=your-key-here" > .env
 ```
 
-Obtenha sua chave gratuita em: https://nvd.nist.gov/developers/request-an-api-key
+Free API key: https://nvd.nist.gov/developers/request-an-api-key
 
 ---
 
-## Como usar
+## Usage
 
 ```bash
-# Uso padrão — menu interativo
+# Default — interactive menu
 python main.py
 
-# Com root (necessário para ARP scan e sniffer)
+# With root (required for ARP scan and sniffer)
 sudo python main.py
 ```
 
-### Exemplo de sessão
+### Example session
 
 ```
 Enter target (domain / IP / CIDR):
-❯ exemplo.com                    # domínio
+❯ example.com                   # domain
 ❯ 192.168.1.1                   # IP
-❯ 192.168.1.0/24                # rede local (CIDR)
+❯ 192.168.1.0/24                # local network (CIDR)
 
 Select modules:
 [1] DNS recon
 [2] Subdomain enum
 ...
-[0] RUN ALL — executa todos os módulos disponíveis
+[0] RUN ALL — runs every module available for the target
 ```
 
-### Configurações disponíveis
+### Runtime options
 
-| Opção | Descrição | Exemplo |
-|-------|-----------|---------|
-| Threads | Conexões paralelas | 50 (padrão), 200 (agressivo) |
-| Timeout | Tempo por conexão | 5s (padrão), 2s (rápido) |
-| Ports | Range de portas | `common`, `1-1024`, `80,443`, `1-65535` |
-| Dir mode | Velocidade do dir enum | Fast (~30s), Normal (~5min), Full (~20min) |
+| Option | Description | Example |
+|--------|-------------|---------|
+| Threads | Parallel workers | 50 (default), 200 (aggressive) |
+| Timeout | Per-connection timeout | 5s (default), 2s (fast) |
+| Ports | Port range | `common`, `1-1024`, `80,443`, `1-65535` |
+| Dir mode | Dir enum depth / wordlist | Fast (~30s), Normal (~5min), Full (~20min) |
 
 ---
 
 ## Wordlists
 
-O GhostOpcode detecta automaticamente as wordlists do Kali Linux.
+GhostOpcode resolves wordlists from common Kali paths first.
 
 **Kali Linux:**
 
@@ -169,19 +167,18 @@ O GhostOpcode detecta automaticamente as wordlists do Kali Linux.
 sudo apt install seclists wordlists
 ```
 
-**Outras distros:**
+**Other distros:**
 
 ```bash
 # SecLists
 sudo git clone https://github.com/danielmiessler/SecLists /usr/share/seclists
 
-# rockyou (para hash cracking)
-# Baixar em: https://github.com/brannondorsey/naive-hashcat/releases
-# Salvar em: wordlists/rockyou.txt
+# rockyou (hash cracking)
+# Download: https://github.com/brannondorsey/naive-hashcat/releases
+# Save as: wordlists/rockyou.txt
 ```
 
-**Manual (qualquer sistema):**
-Crie a pasta `wordlists/` e adicione seus próprios arquivos:
+**Manual (any OS):** create `wordlists/` and drop your files:
 
 ```
 wordlists/
@@ -192,43 +189,43 @@ wordlists/
 
 ---
 
-## Alvos de teste (autorizados)
+## Authorized test targets
 
-Para testar sem precisar de autorização especial:
+Safe hosts for practice (no special permission needed):
 
-| Alvo | Tipo | Descrição |
-|------|------|-----------|
-| `scanme.nmap.org` | Domínio | Servidor oficial do nmap para testes |
-| `testphp.vulnweb.com` | Domínio | Servidor vulnerável oficial da Acunetix |
-| `45.33.32.156` | IP | IP do scanme.nmap.org |
+| Target | Type | Notes |
+|--------|------|-------|
+| `scanme.nmap.org` | Domain | Official nmap.org scan target |
+| `testphp.vulnweb.com` | Domain | Acunetix test application |
+| `45.33.32.156` | IP | scanme.nmap.org address |
 
 ---
 
 ## Changelog
 
-| Versão | O que mudou |
-|--------|-------------|
-| v1.3.1 | Filtro de CVEs genéricos/unknown |
-| v1.3.0 | nmap -sV integrado no port scan para identificação precisa |
-| v1.2.0 | CVE lookup automático com NVD API |
-| v1.1.0 | Hotfixes: logger, wordlists, catchall detection |
-| v1.0.0 | Lançamento inicial — 12 módulos de recon |
+| Version | Changes |
+|---------|---------|
+| v1.3.1 | CVE lookup: filter generic/unknown services; skip IANA port names and nmap noise |
+| v1.3.0 | Port scan: **nmap -sV** for precise service/version fingerprinting |
+| v1.2.0 | Automatic CVE lookup via NVD API |
+| v1.1.0 | Logger, wordlist handling, HTTP catch-all hardening |
+| v1.0.0 | Initial release — 12 recon modules |
 
 ---
 
-## Aviso legal
+## Legal disclaimer
 
-> **Para uso em alvos autorizados apenas.**
+> **Authorized targets only.**
 >
-> O uso desta ferramenta contra sistemas sem autorização
-> prévia e por escrito é **ilegal** em praticamente todos os países.
+> Using this tool against systems **without explicit written permission** is
+> **illegal** in most jurisdictions.
 >
-> O autor não se responsabiliza pelo mau uso desta ferramenta.
-> Sempre obtenha autorização antes de realizar qualquer teste.
+> The authors are not responsible for misuse. Always obtain proper authorization
+> before testing.
 
 ---
 
-## Autor
+## Author
 
 **GhostOpcode** · v1.3.1 · Python Recon Framework
 
