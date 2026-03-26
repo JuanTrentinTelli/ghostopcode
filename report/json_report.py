@@ -45,7 +45,7 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
 
     report = {
         "ghostopcode": {
-            "version": getattr(app_config, "VERSION", "1.4.1"),
+            "version": getattr(app_config, "VERSION", "1.5.0"),
             "generated": datetime.now().isoformat(timespec="seconds"),
             "report_type": "recon_session",
         },

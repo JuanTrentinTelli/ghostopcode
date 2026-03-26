@@ -129,7 +129,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from utils.output import display_findings
+from utils.output import debug_log, display_findings
 
 load_dotenv()
 
@@ -468,6 +468,7 @@ def query_nvd(
     api_key: str,
     timeout: int = 12,
     _retry_429: int = 0,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Query NVD API; never raises; respects rate limits."""
     keyword = build_nvd_query(software, version)
@@ -480,6 +481,16 @@ def query_nvd(
         "startIndex": 0,
     }
     headers = {"apiKey": api_key}
+    kw_show = keyword[:72] + ("…" if len(keyword) > 72 else "")
+    debug_log(
+        "http",
+        detail=(
+            f"GET {NVD_BASE_URL} keywordSearch={kw_show!r} "
+            f"(header apiKey=****)"
+        ),
+        config=config,
+    )
+    t_req = time.perf_counter()
 
     try:
         resp = requests.get(
@@ -489,6 +500,13 @@ def query_nvd(
             timeout=timeout,
         )
         if resp.status_code == 429:
+            debug_log(
+                "http",
+                detail="NVD API",
+                result=f"status 429 rate limited · retry {_retry_429 + 1}/{MAX_429_RETRIES}",
+                elapsed=time.perf_counter() - t_req,
+                config=config,
+            )
             if _retry_429 < MAX_429_RETRIES:
                 time.sleep(30)
                 return query_nvd(
@@ -497,18 +515,55 @@ def query_nvd(
                     api_key,
                     timeout,
                     _retry_429 + 1,
+                    config,
                 )
             return []
         if resp.status_code in (401, 403):
+            debug_log(
+                "http",
+                detail="NVD API",
+                result=f"status {resp.status_code} auth rejected",
+                elapsed=time.perf_counter() - t_req,
+                config=config,
+            )
             return [{"_error": "nvd_auth", "detail": resp.text[:200]}]
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
+            debug_log(
+                "http",
+                detail="NVD API",
+                result="invalid JSON body",
+                elapsed=time.perf_counter() - t_req,
+                config=config,
+            )
             return []
-        return parse_nvd_response(data, software, version)
-    except requests.exceptions.HTTPError:
+        parsed = parse_nvd_response(data, software, version)
+        debug_log(
+            "http",
+            detail="NVD API response",
+            result=f"status {resp.status_code} · {len(parsed)} CVE row(s)",
+            elapsed=time.perf_counter() - t_req,
+            config=config,
+        )
+        return parsed
+    except requests.exceptions.HTTPError as e:
+        debug_log(
+            "http",
+            detail="NVD API",
+            result=f"HTTP error: {e!s}"[:160],
+            elapsed=time.perf_counter() - t_req,
+            config=config,
+        )
         return []
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        debug_log(
+            "http",
+            detail="NVD API",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t_req,
+            config=config,
+        )
         return []
 
 
@@ -596,6 +651,7 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         return base
 
     timeout = max(5, int(config.get("timeout") or 10))
+    quiet = bool(config.get("quiet", False))
 
     console.print()
     console.print(
@@ -622,7 +678,9 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         ver = tgt.get("version")
         src = tgt["source"]
         time.sleep(REQUEST_GAP_S)
-        raw_list = query_nvd(software, ver, api_key, timeout=timeout)
+        raw_list = query_nvd(
+            software, ver, api_key, timeout=timeout, config=config
+        )
         if (
             raw_list
             and len(raw_list) == 1
@@ -670,15 +728,16 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         highest = max(scores) if scores else None
         has_kev = any(x.get("cisa_kev") for x in cves)
 
-        console.print()
-        console.print(
-            Text.assemble(
-                (" [►] ", C_PRI),
-                (label, "bold"),
-                (f"  ({src})", C_DIM),
+        if not quiet:
+            console.print()
+            console.print(
+                Text.assemble(
+                    (" [►] ", C_PRI),
+                    (label, "bold"),
+                    (f"  ({src})", C_DIM),
+                )
             )
-        )
-        if not cves:
+        if not quiet and not cves:
             console.print(Text("     (no CVE rows returned for this query)", style=C_MUTED))
         for c in cves[:10]:
             sev = c.get("cvss_severity") or "—"
@@ -687,17 +746,18 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
             desc = (c.get("description") or "")[:90]
             if len(c.get("description") or "") > 90:
                 desc += "…"
-            line = Text.assemble(
-                ("     ", C_MUTED),
-                (str(c.get("cve_id")), C_DIM),
-                ("  CVSS ", C_MUTED),
-                (sc_s, C_PRI),
-                ("  [", C_MUTED),
-                (str(sev), C_WARN if sev in ("HIGH", "CRITICAL") else C_DIM),
-                ("]  ", C_MUTED),
-                (desc, C_MUTED),
-            )
-            console.print(line)
+            if not quiet:
+                line = Text.assemble(
+                    ("     ", C_MUTED),
+                    (str(c.get("cve_id")), C_DIM),
+                    ("  CVSS ", C_MUTED),
+                    (sc_s, C_PRI),
+                    ("  [", C_MUTED),
+                    (str(sev), C_WARN if sev in ("HIGH", "CRITICAL") else C_DIM),
+                    ("]  ", C_MUTED),
+                    (desc, C_MUTED),
+                )
+                console.print(line)
             flat_rows.append(
                 {
                     "software": label,
@@ -764,7 +824,29 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
             critical_cvss_ge_9,
             module="cve_lookup",
             verbose=bool(config.get("verbose")),
+            config=config,
         )
+
+    if quiet:
+        high_rows = [
+            {
+                "risk": "HIGH",
+                "category": "cve",
+                "value": (
+                    f"{r.get('cve_id')} — CVSS {r.get('cvss')} — {r.get('software')}"
+                ),
+                "note": str(r.get("source") or ""),
+            }
+            for r in flat_rows
+            if str(r.get("severity") or "").upper() == "HIGH"
+        ]
+        if high_rows:
+            display_findings(
+                high_rows,
+                module="cve_lookup",
+                verbose=bool(config.get("verbose")),
+                config=config,
+            )
 
     total_cves = sum(len(f["cves"]) for f in findings)
     crit = sum(
@@ -807,7 +889,7 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     base["status"] = "success"
     base["errors"] = errors
 
-    if flat_rows:
+    if flat_rows and not quiet:
         console.print()
         tbl = Table(
             title=Text("CVE intelligence (rollup)", style=f"bold {C_PRI}"),

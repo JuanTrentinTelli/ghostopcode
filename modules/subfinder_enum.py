@@ -22,7 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 import config as app_config
-from utils.output import display_findings
+from utils.output import debug_log, display_findings
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -169,6 +169,7 @@ def run_subfinder(
     timeout_s: int,
     verbose: bool,
     errors: list[str],
+    config: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Run ProjectDiscovery ``subfinder`` and read FQDNs from a temp output file.
@@ -203,7 +204,13 @@ def run_subfinder(
         "-duc",
     ]
 
+    dbg_cmd = (
+        f"subfinder -d {domain} -silent -timeout {sf_to} -recursive -duc"
+    )
+    debug_log("subprocess", detail=dbg_cmd, config=config)
     wall = int(timeout_s) + 60
+    t0 = time.perf_counter()
+    proc: subprocess.CompletedProcess[str] | None = None
     try:
         proc = subprocess.run(
             cmd,
@@ -221,6 +228,13 @@ def run_subfinder(
         )
     except FileNotFoundError:
         errors.append("subfinder binary not found on PATH")
+        debug_log(
+            "subprocess",
+            detail=dbg_cmd,
+            result="binary not found on PATH",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -247,6 +261,15 @@ def run_subfinder(
             os.unlink(tmp_path)
         except OSError:
             pass
+
+    exit_disp = str(proc.returncode) if proc is not None else "n/a"
+    debug_log(
+        "subprocess",
+        detail="subfinder finished",
+        result=f"exit {exit_disp} · {len(out)} host(s) from output",
+        elapsed=time.perf_counter() - t0,
+        config=config,
+    )
 
     return sorted(set(out))
 
@@ -332,6 +355,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     """
     t0 = time.perf_counter()
     verbose = bool(config.get("verbose"))
+    quiet = bool(config.get("quiet", False))
     errors: list[str] = []
 
     default_to = int(getattr(app_config, "SUBFINDER_TIMEOUT", 300))
@@ -427,7 +451,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         if isinstance(wrapped, dict):
             prior = wrapped.get("subdomain_enum")
 
-    raw_hosts = run_subfinder(domain, timeout_s, verbose, errors)
+    raw_hosts = run_subfinder(domain, timeout_s, verbose, errors, config)
     if not raw_hosts and errors:
         console.print(
             Text("  [!] No hostnames returned — check errors / API keys / network", style=C_WARN)
@@ -492,19 +516,37 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     )
 
     critical_rows = [r for r in found_rows if r.get("risk") == "CRITICAL"]
-    if critical_rows:
+    high_rows = [r for r in found_rows if r.get("risk") == "HIGH"]
+
+    def _sf_finding_row(r: dict[str, Any]) -> dict[str, Any]:
+        rk = str(r.get("risk") or "LOW").upper()
+        note = (
+            "High-value subdomain (pattern match)"
+            if rk == "CRITICAL"
+            else "Elevated-interest subdomain (pattern match)"
+        )
+        return {
+            "risk": rk,
+            "category": str(r.get("category") or "subdomain"),
+            "value": f"{r['fqdn']} → {r.get('ip') or '—'}",
+            "note": note,
+        }
+
+    if quiet:
+        ch_rows = critical_rows + high_rows
+        if ch_rows:
+            display_findings(
+                [_sf_finding_row(r) for r in ch_rows],
+                module="subfinder_enum",
+                verbose=verbose,
+                config=config,
+            )
+    elif critical_rows:
         display_findings(
-            [
-                {
-                    "risk": "CRITICAL",
-                    "category": str(r.get("category") or "subdomain"),
-                    "value": f"{r['fqdn']} → {r.get('ip') or '—'}",
-                    "note": "High-value subdomain (pattern match)",
-                }
-                for r in critical_rows
-            ],
+            [_sf_finding_row(r) for r in critical_rows],
             module="subfinder_enum",
             verbose=verbose,
+            config=config,
         )
 
     base["found"] = found_rows
@@ -514,99 +556,102 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     base["stats"]["new_vs_wordlist"] = int(cmp.get("new_by_subfinder") or 0)
     base["stats"]["duration_s"] = round(time.perf_counter() - t0, 2)
 
-    for row in found_rows[:40]:
-        fq = row["fqdn"]
-        ip_s = row.get("ip") or "—"
-        risk = row.get("risk", "LOW")
-        star = " ★ new" if row.get("new") else ""
-        console.print(
-            Text.assemble(
-                (" [+] ", C_PRI),
-                (f"{fq:<42}", C_DIM),
-                (" → ", C_MUTED),
-                (f"{str(ip_s):<15}", C_PRI),
-                (" ", ""),
-                (f"[{risk}]", _risk_style(risk)),
-                (star, C_WARN if row.get("new") else C_MUTED),
+    if not quiet:
+        for row in found_rows[:40]:
+            fq = row["fqdn"]
+            ip_s = row.get("ip") or "—"
+            risk = row.get("risk", "LOW")
+            star = " ★ new" if row.get("new") else ""
+            console.print(
+                Text.assemble(
+                    (" [+] ", C_PRI),
+                    (f"{fq:<42}", C_DIM),
+                    (" → ", C_MUTED),
+                    (f"{str(ip_s):<15}", C_PRI),
+                    (" ", ""),
+                    (f"[{risk}]", _risk_style(risk)),
+                    (star, C_WARN if row.get("new") else C_MUTED),
+                )
             )
-        )
-    if len(found_rows) > 40:
+        if len(found_rows) > 40:
+            console.print(
+                Text(
+                    f"     … {len(found_rows) - 40} more (see HTML report)",
+                    style=C_MUTED,
+                )
+            )
+
+        console.print()
+        console.print(Text(" [COMPARE] vs wordlist enum:", style=f"bold {C_DIM}"))
         console.print(
             Text(
-                f"     … {len(found_rows) - 40} more (see HTML report)",
-                style=C_MUTED,
+                f"   ├── Found by BOTH       : {len(both_set)} subdomains",
+                style=C_DIM,
             )
-        )
-
-    console.print()
-    console.print(Text(" [COMPARE] vs wordlist enum:", style=f"bold {C_DIM}"))
-    console.print(
-        Text(
-            f"   ├── Found by BOTH       : {len(both_set)} subdomains",
-            style=C_DIM,
-        )
-    )
-    console.print(
-        Text(
-            f"   ├── Only wordlist       : {len(cmp['only_wordlist'])} subdomains",
-            style=C_DIM,
-        )
-    )
-    console.print(
-        Text(
-            f"   └── Only subfinder      : {cmp['new_by_subfinder']} subdomains ← new intel",
-            style=C_WARN,
-        )
-    )
-    oa = cmp["only_subfinder"][:12]
-    for i, fq in enumerate(oa):
-        cat, risk = categorize_subdomain(fq)
-        sym = (
-            "└──"
-            if i == len(oa) - 1 and len(cmp["only_subfinder"]) <= 12
-            else "├──"
         )
         console.print(
             Text(
-                f"       {sym} {fq}  [{risk}]  ({cat})",
-                style=_risk_style(risk) if risk == "CRITICAL" else C_DIM,
+                f"   ├── Only wordlist       : {len(cmp['only_wordlist'])} subdomains",
+                style=C_DIM,
             )
         )
-    rest = len(cmp["only_subfinder"]) - len(oa)
-    if rest > 0:
-        console.print(Text(f"       … and {rest} more only-subfinder hosts", style=C_MUTED))
-
-    if not isinstance(prior, dict) or prior.get("status") != "success":
         console.print(
             Text(
-                "   [i] Run [2] Subdomain enum in the same session to diff vs wordlist.",
-                style=C_MUTED,
+                f"   └── Only subfinder      : {cmp['new_by_subfinder']} subdomains ← new intel",
+                style=C_WARN,
             )
         )
+        oa = cmp["only_subfinder"][:12]
+        for i, fq in enumerate(oa):
+            cat, risk = categorize_subdomain(fq)
+            sym = (
+                "└──"
+                if i == len(oa) - 1 and len(cmp["only_subfinder"]) <= 12
+                else "├──"
+            )
+            console.print(
+                Text(
+                    f"       {sym} {fq}  [{risk}]  ({cat})",
+                    style=_risk_style(risk) if risk == "CRITICAL" else C_DIM,
+                )
+            )
+        rest = len(cmp["only_subfinder"]) - len(oa)
+        if rest > 0:
+            console.print(
+                Text(f"       … and {rest} more only-subfinder hosts", style=C_MUTED)
+            )
 
-    console.print()
-    tbl = Table(
-        title=Text("Subfinder findings", style=f"bold {C_PRI}"),
-        box=box.ROUNDED,
-        border_style=C_PANEL,
-        show_lines=True,
-    )
-    tbl.add_column("Subdomain", style=C_DIM, no_wrap=False)
-    tbl.add_column("IP", style=C_PRI)
-    tbl.add_column("Category", style=C_MUTED)
-    tbl.add_column("Risk", style=C_DIM)
-    tbl.add_column("New", justify="center")
-    for row in found_rows[:35]:
-        tbl.add_row(
-            row["fqdn"],
-            str(row.get("ip") or "—"),
-            str(row.get("category_label") or row.get("category")),
-            row.get("risk", "LOW"),
-            "★" if row.get("new") else "",
+        if not isinstance(prior, dict) or prior.get("status") != "success":
+            console.print(
+                Text(
+                    "   [i] Run [2] Subdomain enum in the same session to diff vs wordlist.",
+                    style=C_MUTED,
+                )
+            )
+
+        console.print()
+        tbl = Table(
+            title=Text("Subfinder findings", style=f"bold {C_PRI}"),
+            box=box.ROUNDED,
+            border_style=C_PANEL,
+            show_lines=True,
         )
-    if len(found_rows) > 35:
-        tbl.add_row("…", "…", f"+{len(found_rows) - 35} rows", "", "")
-    console.print(tbl)
+        tbl.add_column("Subdomain", style=C_DIM, no_wrap=False)
+        tbl.add_column("IP", style=C_PRI)
+        tbl.add_column("Category", style=C_MUTED)
+        tbl.add_column("Risk", style=C_DIM)
+        tbl.add_column("New", justify="center")
+        for row in found_rows[:35]:
+            tbl.add_row(
+                row["fqdn"],
+                str(row.get("ip") or "—"),
+                str(row.get("category_label") or row.get("category")),
+                row.get("risk", "LOW"),
+                "★" if row.get("new") else "",
+            )
+        if len(found_rows) > 35:
+            tbl.add_row("…", "…", f"+{len(found_rows) - 35} rows", "", "")
+        console.print(tbl)
 
     rc = sum(1 for r in found_rows if r.get("risk") == "CRITICAL")
     rh = sum(1 for r in found_rows if r.get("risk") == "HIGH")

@@ -19,7 +19,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from config import DEFAULT_TIMEOUT
-from utils.output import detect_sensitive_in_url, display_findings
+from utils.output import debug_log, detect_sensitive_in_url, display_findings
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -242,7 +242,12 @@ _PATTERN_ORDER_BY_RISK: list[str] = [
 ]
 
 
-def fetch_wayback(domain: str, timeout: int, errors: list[str]) -> list[str]:
+def fetch_wayback(
+    domain: str,
+    timeout: int,
+    errors: list[str],
+    config: dict[str, Any] | None = None,
+) -> list[str]:
     """
     Fetch historical URLs from Wayback Machine CDX API (no external tools).
 
@@ -269,13 +274,31 @@ def fetch_wayback(domain: str, timeout: int, errors: list[str]) -> list[str]:
             "filter": "statuscode:200",
         }
         try:
+            debug_log(
+                "http",
+                detail=(
+                    "GET web.archive.org/cdx/search/cdx "
+                    f"url={url_spec!r} output=json"
+                ),
+                config=config,
+            )
+            t_wb = time.perf_counter()
             resp = requests.get(base, params=params, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
+            n_before = len(urls)
             if isinstance(data, list) and len(data) > 1:
                 for row in data[1:]:
                     if isinstance(row, list) and row and row[0]:
                         urls.add(str(row[0]).strip())
+            added = len(urls) - n_before
+            debug_log(
+                "http",
+                detail="Wayback CDX response",
+                result=f"status {resp.status_code} · +{added} URL(s)",
+                elapsed=time.perf_counter() - t_wb,
+                config=config,
+            )
         except Exception as e:  # noqa: BLE001
             errors.append(f"Wayback ({url_spec}): {e}")
 
@@ -481,6 +504,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     timeout = int(config.get("timeout") or DEFAULT_TIMEOUT)
     timeout = max(3, timeout)
     verbose = bool(config.get("verbose"))
+    quiet = bool(config.get("quiet", False))
     errors: list[str] = []
 
     base: dict[str, Any] = {
@@ -526,7 +550,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     # --- Collect ----------------------------------------------------------------
     console.print()
-    wb = fetch_wayback(domain, timeout, errors)
+    wb = fetch_wayback(domain, timeout, errors, config)
     base["sources"]["wayback"]["count"] = len(wb)
     console.print(
         Text.assemble(
@@ -639,38 +663,43 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             )
 
     # --- Filter report -----------------------------------------------------------
-    console.print()
-    console.print(Text(" [FILTER] Applying vulnerability patterns...", style=f"bold {C_DIM}"))
-    console.print()
-
-    _risk_style = {
-        "CRITICAL": C_ERR,
-        "HIGH": C_WARN,
-        "MEDIUM": C_DIM,
-        "LOW": C_MUTED,
-    }
-    for pname in _PATTERN_ORDER_BY_RISK:
-        if pname not in findings:
-            continue
-        pdata = GF_PATTERNS[pname]
-        risk = str(pdata.get("risk") or "INFO").upper()
-        desc = str(pdata.get("description") or pname)
-        n = len(findings[pname])
-        style = _risk_style.get(risk, C_MUTED)
+    if not quiet:
+        console.print()
         console.print(
-            Text.assemble(
-                (f" [{risk}] ", style),
-                (f"{desc[:32]:<32}", C_DIM),
-                (f": {n} URLs", style),
-            )
+            Text(" [FILTER] Applying vulnerability patterns...", style=f"bold {C_DIM}")
         )
+        console.print()
+
+        _risk_style = {
+            "CRITICAL": C_ERR,
+            "HIGH": C_WARN,
+            "MEDIUM": C_DIM,
+            "LOW": C_MUTED,
+        }
+        for pname in _PATTERN_ORDER_BY_RISK:
+            if pname not in findings:
+                continue
+            pdata = GF_PATTERNS[pname]
+            risk = str(pdata.get("risk") or "INFO").upper()
+            desc = str(pdata.get("description") or pname)
+            n = len(findings[pname])
+            style = _risk_style.get(risk, C_MUTED)
+            console.print(
+                Text.assemble(
+                    (f" [{risk}] ", style),
+                    (f"{desc[:32]:<32}", C_DIM),
+                    (f": {n} URLs", style),
+                )
+            )
 
     if findings_flat:
-        console.print()
+        if not quiet:
+            console.print()
         display_findings(
             findings_flat,
             module="url_harvester",
             verbose=verbose,
+            config=config,
         )
 
     crit = sum(1 for f in findings_flat if f.get("risk") == "CRITICAL")
@@ -731,4 +760,5 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             Text(f" [verbose] {len(findings)} pattern buckets", style=C_MUTED)
         )
 
+    base["findings_flat"] = findings_flat
     return base

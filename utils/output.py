@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 from rich.console import Console
@@ -27,7 +28,58 @@ C_MUTED = "#4A5A62"
 C_PRI = "#00FF41"
 C_BLUE = "#6CA0DC"
 
+# Debug trace colours (terminal only; never written to reports)
+DBG_SUBPROCESS = "#00CED1"
+DBG_HTTP = "#6CA0DC"
+DBG_DNS = "#D868C9"
+DBG_FILE = "#E8C547"
+DBG_INFO = "#6F7F86"
+
 console = Console(highlight=False, force_terminal=True)
+
+
+def debug_log(
+    action: str,
+    detail: str = "",
+    result: str = "",
+    elapsed: float | None = None,
+    config: dict[str, Any] | None = None,
+) -> None:
+    """
+    Print structured debug lines when ``config["debug"]`` is True.
+
+    Never log secrets; keep ``detail``/``result`` free of API keys and tokens.
+    """
+    if not config or not config.get("debug", False):
+        return
+
+    act = (action or "info").lower()
+    color = {
+        "subprocess": DBG_SUBPROCESS,
+        "http": DBG_HTTP,
+        "dns": DBG_DNS,
+        "file": DBG_FILE,
+        "info": DBG_INFO,
+    }.get(act, DBG_INFO)
+
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:12]
+    elapsed_s = f" · {elapsed:.2f}s" if elapsed is not None else ""
+
+    console.print()
+    console.print(
+        Text.assemble(
+            (" [DEBUG ", DBG_INFO),
+            (ts, DBG_INFO),
+            ("] ", DBG_INFO),
+            (act.upper(), f"bold {color}"),
+            (" ", ""),
+            (detail, C_DIM),
+        )
+    )
+    if result:
+        console.print(
+            Text(f"   → {result}{elapsed_s}", style=C_MUTED),
+        )
 
 # (regex, description) — applied to full URL string
 _SENSITIVE_URL_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -84,16 +136,21 @@ def display_findings(
     findings: list[dict[str, Any]],
     module: str = "",
     verbose: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> None:
     """
     Print findings according to ``TERMINAL_VERBOSITY``.
 
     - CRITICAL / HIGH: always full detail (never suppressed).
-    - MEDIUM: top 3 per category unless ``verbose``.
-    - LOW / INFO: counts only unless ``verbose``.
+    - MEDIUM: top 3 per category unless ``verbose``; in ``quiet`` mode, one
+      suppressed count line only.
+    - LOW / INFO: counts only unless ``verbose``; in ``quiet`` mode, hidden
+      (no count line).
     """
     if not findings:
         return
+
+    quiet = bool(config.get("quiet")) if config else False
 
     by_severity: dict[str, list[dict[str, Any]]] = {
         "CRITICAL": [],
@@ -154,7 +211,17 @@ def display_findings(
     # --- MEDIUM ---
     med = by_severity["MEDIUM"]
     if med:
-        if verbose:
+        if quiet:
+            total_medium = len(med)
+            console.print(
+                Text(
+                    f" [i] {total_medium} MEDIUM finding(s) suppressed "
+                    f"(quiet mode — see HTML report){title_suffix}",
+                    style=C_MUTED,
+                )
+            )
+            console.print()
+        elif verbose:
             for finding in med:
                 value = _finding_value(finding)
                 category = str(
@@ -167,6 +234,7 @@ def display_findings(
                     )
                 )
                 console.print(Text(f"      {value}", style=C_DIM))
+            console.print()
         else:
             medium_by_cat: dict[str, list[dict[str, Any]]] = defaultdict(list)
             for f in med:
@@ -192,12 +260,14 @@ def display_findings(
                             style=C_MUTED,
                         )
                     )
-        console.print()
+            console.print()
 
     # --- LOW / INFO ---
     low_n = len(by_severity["LOW"])
     info_n = len(by_severity["INFO"])
-    if not verbose:
+    if quiet:
+        pass
+    elif not verbose:
         if low_n:
             console.print(
                 Text(
@@ -222,5 +292,5 @@ def display_findings(
                 )
                 console.print(Text(f"      {value}", style=C_MUTED))
 
-    if verbose and (low_n or info_n):
+    if verbose and (low_n or info_n) and not quiet:
         console.print()

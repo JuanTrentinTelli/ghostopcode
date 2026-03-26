@@ -17,6 +17,7 @@ from rich.text import Text
 
 from config import DEFAULT_TIMEOUT, USER_AGENT
 from modules.http_methods import resolve_base_url
+from utils.output import debug_log
 from utils.target_parser import Target
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -561,6 +562,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     timeout = int(config.get("timeout") or DEFAULT_TIMEOUT)
     timeout = max(1, timeout)
     verbose = bool(config.get("verbose"))
+    quiet = bool(config.get("quiet", False))
     errors: list[str] = []
 
     out: dict[str, Any] = {
@@ -610,16 +612,33 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     _panel_header_line("WAF DETECTION", display)
 
     normal_resp: requests.Response | None = None
+    baseline_url = base_url.rstrip("/") + "/"
+    debug_log("http", detail=f"GET {baseline_url} (WAF baseline)", config=config)
+    t_bl = time.perf_counter()
     try:
         normal_resp = requests.get(
-            base_url.rstrip("/") + "/",
+            baseline_url,
             timeout=timeout,
             verify=False,
             allow_redirects=True,
             headers=_session_headers(),
         )
+        debug_log(
+            "http",
+            detail="WAF baseline response",
+            result=f"status {normal_resp.status_code}",
+            elapsed=time.perf_counter() - t_bl,
+            config=config,
+        )
     except Exception as e:  # noqa: BLE001
         errors.append(f"baseline GET: {e}")
+        debug_log(
+            "http",
+            detail="WAF baseline",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t_bl,
+            config=config,
+        )
         out["status"] = "error"
         console.print(Text(f"  [!] Baseline request failed: {e}", style=f"bold {C_ERR}"))
         return out
@@ -628,7 +647,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     out["passive_evidence"] = passive_lines
     if passive_waf:
         out["detection_methods"]["passive_headers"] = True
-    _print_passive_lines(passive_lines)
+    if not quiet:
+        _print_passive_lines(passive_lines)
 
     probe_summaries: list[dict[str, Any]] = []
     blocked_count = 0
@@ -637,6 +657,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         time.sleep(0.5)
         url = _build_probe_url(base_url, probe)
         extra_headers = probe.get("headers") or {}
+        url_disp = url if len(url) <= 120 else url[:117] + "…"
+        debug_log(
+            "http",
+            detail=f"GET {url_disp} [{probe['name']}]",
+            config=config,
+        )
+        t_pr = time.perf_counter()
         try:
             pr = requests.get(
                 url,
@@ -650,6 +677,18 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             if blocked:
                 blocked_count += 1
                 out["detection_methods"]["active_probes"] = True
+            st_lbl = (
+                "BLOCKED"
+                if pr.status_code in WAF_BLOCK_CODES
+                else "OK"
+            )
+            debug_log(
+                "http",
+                detail=f"WAF probe [{probe['name']}]",
+                result=f"status {pr.status_code} · {st_lbl}",
+                elapsed=time.perf_counter() - t_pr,
+                config=config,
+            )
             probe_summaries.append(
                 {
                     "probe": probe["name"],
@@ -661,6 +700,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             err = f"{probe['name']}: {e}"
             errors.append(err)
+            debug_log(
+                "http",
+                detail=f"WAF probe [{probe['name']}]",
+                result=f"error: {type(e).__name__}",
+                elapsed=time.perf_counter() - t_pr,
+                config=config,
+            )
             probe_summaries.append(
                 {
                     "probe": probe["name"],
@@ -671,7 +717,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             )
 
     out["probes"] = probe_summaries
-    _print_probe_lines(probe_summaries)
+    if not quiet:
+        _print_probe_lines(probe_summaries)
 
     timing: dict[str, Any] = {}
     try:
@@ -760,10 +807,11 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 style=C_DIM,
             )
         )
-        _print_evasion_hints(
-            waf_info,
-            generic=bool(waf_info.get("name") == "Unknown edge protection"),
-        )
+        if not quiet:
+            _print_evasion_hints(
+                waf_info,
+                generic=bool(waf_info.get("name") == "Unknown edge protection"),
+            )
     else:
         console.print()
         console.print(Text(" [✓] No WAF detected", style=f"bold {C_PRI}"))

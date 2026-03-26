@@ -30,7 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT
-from utils.output import display_findings
+from utils.output import debug_log, display_findings
 from utils.target_parser import Target
 
 try:
@@ -707,6 +707,7 @@ def run_nmap_service_detection(
     open_ports: list[int],
     timeout: int,
     verbose: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """
     Run nmap -sV on discovered open ports only (phase 2).
@@ -721,18 +722,31 @@ def run_nmap_service_detection(
 
     ports_str = ",".join(str(p) for p in sorted(set(open_ports)))
     host_timeout = max(60, len(open_ports) * 5)
-
+    nmap_args = (
+        f"-sV -T4 --version-intensity 5 --open "
+        f"--host-timeout {host_timeout}s"
+    )
+    debug_log(
+        "subprocess",
+        detail=f"nmap -sV -T4 -p {ports_str} {host} (python-nmap)",
+        config=config,
+    )
+    t_nm = time.perf_counter()
     try:
         nm = nmap.PortScanner()
         nm.scan(
             hosts=host,
             ports=ports_str,
-            arguments=(
-                f"-sV -T4 --version-intensity 5 --open "
-                f"--host-timeout {host_timeout}s"
-            ),
+            arguments=nmap_args,
         )
     except Exception as e:  # noqa: BLE001
+        debug_log(
+            "subprocess",
+            detail="nmap -sV",
+            result=f"failed: {type(e).__name__}: {e!s}"[:180],
+            elapsed=time.perf_counter() - t_nm,
+            config=config,
+        )
         if verbose:
             console.print(
                 Text(f" [WARN] nmap -sV failed: {e}", style=C_WARN),
@@ -770,12 +784,26 @@ def run_nmap_service_detection(
                     "cpe": cpe,
                 }
     except Exception as e:  # noqa: BLE001
+        debug_log(
+            "subprocess",
+            detail="nmap -sV parse",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t_nm,
+            config=config,
+        )
         if verbose:
             console.print(
                 Text(f" [WARN] nmap -sV parse error: {e}", style=C_WARN),
             )
         return out
 
+    debug_log(
+        "subprocess",
+        detail="nmap -sV complete",
+        result=f"{len(out)} port(s) fingerprinted",
+        elapsed=time.perf_counter() - t_nm,
+        config=config,
+    )
     return out
 
 
@@ -900,12 +928,14 @@ class _PortScanLiveDisplay:
         total: int,
         host: str,
         get_snapshot: Callable[[], tuple[int, int, float, float, list[str]]],
+        quiet: bool = False,
     ) -> None:
         self.progress = progress
         self.task_id = task_id
         self.total = total
         self.host = host
         self._snapshot = get_snapshot
+        self.quiet = quiet
 
     def __rich__(self) -> RenderableType:
         done, n_open, elapsed, rps, recent = self._snapshot()
@@ -927,7 +957,10 @@ class _PortScanLiveDisplay:
             (f" · {pct:.0f}%", C_MUTED),
         )
 
-        hits_block = Text("\n".join(recent), style=C_DIM) if recent else Text("")
+        if self.quiet:
+            hits_block: RenderableType = Text("")
+        else:
+            hits_block = Text("\n".join(recent), style=C_DIM) if recent else Text("")
 
         return Group(
             self.progress,
@@ -1025,6 +1058,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     threads = max(1, int(config.get("threads") or DEFAULT_THREADS))
     timeout = max(0.3, float(config.get("timeout") or DEFAULT_TIMEOUT))
     verbose = bool(config.get("verbose", False))
+    quiet = bool(config.get("quiet", False))
     ports_arg = str(config.get("ports_range") or "common")
 
     base: dict[str, Any] = {
@@ -1146,7 +1180,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         rps = len(window) / 2.0 if window else 0.0
         return dc, op, elapsed, rps, recent
 
-    display = _PortScanLiveDisplay(progress, task_id, n_total, host_ip, snapshot)
+    display = _PortScanLiveDisplay(
+        progress, task_id, n_total, host_ip, snapshot, quiet=quiet
+    )
 
     max_inflight = min(max(threads * 4, threads), 4096)
     pending: set[Any] = set()
@@ -1263,12 +1299,14 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     style=f"bold {C_PRI}",
                 )
             )
-            console.print(Text(" [►] Identifying services…", style=C_DIM))
+            if not quiet:
+                console.print(Text(" [►] Identifying services…", style=C_DIM))
             nmap_map = run_nmap_service_detection(
                 host_ip,
                 open_sorted,
                 int(max(1, timeout)),
                 verbose,
+                config,
             )
             base["nmap_sV_used"] = bool(nmap_map)
             base["nmap_service_detection"] = {
@@ -1281,40 +1319,41 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     style=f"bold {C_PRI}",
                 )
             )
-            for p in open_sorted:
-                info = nmap_map.get(p)
-                if info:
-                    prod = (info.get("product") or "").strip()
-                    ver = (info.get("version") or "").strip()
-                    nm_name = (info.get("name") or "").strip()
-                    extra = (info.get("extrainfo") or "").strip()
-                    label = " ".join(x for x in (prod or nm_name, ver) if x).strip()
-                    if not label:
-                        label = nm_name or "unknown"
-                    if extra and len(label) < 50:
-                        label = f"{label} ({extra})"[:44]
-                    svc_disp = (
-                        _nmap_name_to_service(nm_name, p) if nm_name else "TCP"
-                    )
-                    console.print(
-                        Text.assemble(
-                            ("     ", C_MUTED),
-                            (f"{p}", C_DIM),
-                            (" → ", C_MUTED),
-                            (f"{label[:46]:<46}", C_PRI),
-                            (f" ({svc_disp})", C_MUTED),
+            if not quiet:
+                for p in open_sorted:
+                    info = nmap_map.get(p)
+                    if info:
+                        prod = (info.get("product") or "").strip()
+                        ver = (info.get("version") or "").strip()
+                        nm_name = (info.get("name") or "").strip()
+                        extra = (info.get("extrainfo") or "").strip()
+                        label = " ".join(x for x in (prod or nm_name, ver) if x).strip()
+                        if not label:
+                            label = nm_name or "unknown"
+                        if extra and len(label) < 50:
+                            label = f"{label} ({extra})"[:44]
+                        svc_disp = (
+                            _nmap_name_to_service(nm_name, p) if nm_name else "TCP"
                         )
-                    )
-                else:
-                    console.print(
-                        Text.assemble(
-                            ("     ", C_MUTED),
-                            (f"{p}", C_DIM),
-                            (" → ", C_MUTED),
-                            ("unknown", C_DIM),
-                            (" (TCP)", C_MUTED),
+                        console.print(
+                            Text.assemble(
+                                ("     ", C_MUTED),
+                                (f"{p}", C_DIM),
+                                (" → ", C_MUTED),
+                                (f"{label[:46]:<46}", C_PRI),
+                                (f" ({svc_disp})", C_MUTED),
+                            )
                         )
-                    )
+                    else:
+                        console.print(
+                            Text.assemble(
+                                ("     ", C_MUTED),
+                                (f"{p}", C_DIM),
+                                (" → ", C_MUTED),
+                                ("unknown", C_DIM),
+                                (" (TCP)", C_MUTED),
+                            )
+                        )
 
     port_rows: list[dict[str, Any]] = []
     for p in open_sorted:
@@ -1407,9 +1446,11 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             ],
             module="port_scan",
             verbose=verbose,
+            config=config,
         )
 
-    _print_open_table(port_rows)
+    if not quiet:
+        _print_open_table(port_rows)
 
     oi = base["os_inference"]
     console.print()
@@ -1421,7 +1462,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     )
     ev = oi.get("evidence") or []
-    if ev:
+    if ev and not quiet:
         console.print(
             Text(f"        Evidence : {' · '.join(ev[:5])}", style=C_MUTED)
         )

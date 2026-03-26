@@ -925,6 +925,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             return base
 
         base["base_url"] = resolved
+        quiet = bool(config.get("quiet", False))
         console.print(
             Panel(
                 Text(f"  HTTP METHODS  ·  {resolved}", style=f"bold {C_PRI}"),
@@ -977,18 +978,20 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 if cinfo.get("is_catchall"):
                     catchall_skipped.append({"endpoint": ep, **cinfo})
                     cs = cinfo.get("catch_status")
-                    console.print(
-                        Text(
-                            f" [!] {ep}  → catchall detected "
-                            f"(status {cs} for bogus methods) — skipping",
-                            style=C_WARN,
+                    if not quiet:
+                        console.print(
+                            Text(
+                                f" [!] {ep}  → catchall detected "
+                                f"(status {cs} for bogus methods) — skipping",
+                                style=C_WARN,
+                            )
                         )
-                    )
                     continue
 
-            console.print(
-                Text(f" [✓] {ep}  → testing methods (non-catchall)", style=C_PRI),
-            )
+            if not quiet:
+                console.print(
+                    Text(f" [✓] {ep}  → testing methods (non-catchall)", style=C_PRI),
+                )
             rid = secrets.token_hex(6)
             block = _run_method_probe(resolved, ep, timeout, rid)
             methods_out[ep] = block
@@ -1015,69 +1018,73 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["findings"] = crit
 
         # --- Terminal output ---
-        for ep, block in methods_out.items():
-            decl = block.get("options_declared") or []
-            if decl:
-                line = ", ".join(decl)
-                t = Text(f"\n [OPTIONS] Declared methods on {ep}:\n   ", style=f"bold {C_WARN}")
-                t.append("Allow / ACA: ", style=C_DIM)
-                for i, m in enumerate(decl):
-                    style = C_ERR if m in ("PUT", "DELETE", "TRACE", "TRACK") else C_DIM
-                    t.append(m, style=style)
-                    if i < len(decl) - 1:
-                        t.append(", ", style=C_DIM)
-                console.print(t)
+        if not quiet:
+            for ep, block in methods_out.items():
+                decl = block.get("options_declared") or []
+                if decl:
+                    line = ", ".join(decl)
+                    t = Text(
+                        f"\n [OPTIONS] Declared methods on {ep}:\n   ",
+                        style=f"bold {C_WARN}",
+                    )
+                    t.append("Allow / ACA: ", style=C_DIM)
+                    for i, m in enumerate(decl):
+                        style = C_ERR if m in ("PUT", "DELETE", "TRACE", "TRACK") else C_DIM
+                        t.append(m, style=style)
+                        if i < len(decl) - 1:
+                            t.append(", ", style=C_DIM)
+                    console.print(t)
 
-            tbl = Table(
-                title=Text(f"Methods @ {ep}", style=f"bold {C_PRI}"),
-                box=box.ROUNDED,
-                border_style=C_ACCENT,
-            )
-            tbl.add_column("Method", style=C_DIM)
-            tbl.add_column("Status", justify="right")
-            tbl.add_column("Finding", style=C_MUTED)
-            for meth in sorted(block["methods_tested"].keys()):
-                info = block["methods_tested"][meth]
-                st = info.get("status")
-                st_s = str(st) if st is not None else "—"
-                note = info.get("note") or info.get("error") or "—"
-                rk = info.get("risk")
-                if rk == "CRITICAL":
-                    note_s = f"[CRITICAL] {note}"
-                    style = C_ERR
-                elif rk == "HIGH":
-                    note_s = f"[HIGH] {note}"
-                    style = C_WARN
-                elif rk == "MEDIUM":
-                    note_s = f"[MEDIUM] {note}"
-                    style = C_WARN
-                else:
-                    note_s = note
-                    style = C_MUTED
-                tbl.add_row(meth, st_s, Text(note_s, style=style))
+                tbl = Table(
+                    title=Text(f"Methods @ {ep}", style=f"bold {C_PRI}"),
+                    box=box.ROUNDED,
+                    border_style=C_ACCENT,
+                )
+                tbl.add_column("Method", style=C_DIM)
+                tbl.add_column("Status", justify="right")
+                tbl.add_column("Finding", style=C_MUTED)
+                for meth in sorted(block["methods_tested"].keys()):
+                    info = block["methods_tested"][meth]
+                    st = info.get("status")
+                    st_s = str(st) if st is not None else "—"
+                    note = info.get("note") or info.get("error") or "—"
+                    rk = info.get("risk")
+                    if rk == "CRITICAL":
+                        note_s = f"[CRITICAL] {note}"
+                        style = C_ERR
+                    elif rk == "HIGH":
+                        note_s = f"[HIGH] {note}"
+                        style = C_WARN
+                    elif rk == "MEDIUM":
+                        note_s = f"[MEDIUM] {note}"
+                        style = C_WARN
+                    else:
+                        note_s = note
+                        style = C_MUTED
+                    tbl.add_row(meth, st_s, Text(note_s, style=style))
+                console.print()
+                console.print(tbl)
+
             console.print()
-            console.print(tbl)
-
-        console.print()
-        console.print(Text(" [HEADERS] Security audit", style=f"bold {C_WARN}"))
-        for name in sec.get("present") or []:
-            console.print(
-                Text(f"   ✓  {name:<32} present", style=C_PRI),
-            )
-        for m in sec.get("missing") or []:
-            console.print(
-                Text(
-                    f"   ✗  {m.get('header', ''):<32} MISSING  [{m.get('risk', 'LOW')}]",
-                    style=C_ERR if m.get("risk") == "MEDIUM" else C_WARN,
+            console.print(Text(" [HEADERS] Security audit", style=f"bold {C_WARN}"))
+            for name in sec.get("present") or []:
+                console.print(
+                    Text(f"   ✓  {name:<32} present", style=C_PRI),
                 )
-            )
-        for e in sec.get("exposed") or []:
-            console.print(
-                Text(
-                    f"   !  {e.get('header', '')}: {e.get('value', '')[:50]}  exposed  [{e.get('risk')}]",
-                    style=C_WARN,
+            for m in sec.get("missing") or []:
+                console.print(
+                    Text(
+                        f"   ✗  {m.get('header', ''):<32} MISSING  [{m.get('risk', 'LOW')}]",
+                        style=C_ERR if m.get("risk") == "MEDIUM" else C_WARN,
+                    )
                 )
-            )
+            for e in sec.get("exposed") or []:
+                console.print(
+                    Text(
+                        f"   !  {e.get('header', '')}: {e.get('value', '')[:50]}  exposed  [{e.get('risk')}]",
+                        style=C_WARN,
+                    )
+                )
 
         if cors.get("misconfigured"):
             console.print()

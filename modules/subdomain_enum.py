@@ -37,6 +37,7 @@ from config import (
     WORDLIST_SUBDOMAINS,
     count_lines,
 )
+from utils.output import display_findings
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -324,12 +325,14 @@ class _MissionLiveDisplay:
         total: int,
         domain: str,
         get_snapshot: Callable[[], tuple[int, int, float, float, list[str]]],
+        quiet: bool = False,
     ) -> None:
         self.progress = progress
         self.task_id = task_id
         self.total = total
         self.domain = domain
         self._snapshot = get_snapshot
+        self.quiet = quiet
 
     def __rich__(self) -> RenderableType:
         done, found, elapsed, rps, recent = self._snapshot()
@@ -351,7 +354,10 @@ class _MissionLiveDisplay:
             (f" · {pct:.0f}%", C_MUTED),
         )
 
-        hits_block = Text("\n".join(recent), style=C_DIM) if recent else Text("")
+        if self.quiet:
+            hits_block: RenderableType = Text("")
+        else:
+            hits_block = Text("\n".join(recent), style=C_DIM) if recent else Text("")
 
         return Group(
             self.progress,
@@ -379,6 +385,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     threads = max(1, int(config.get("threads") or DEFAULT_THREADS))
     timeout = max(1, int(config.get("timeout") or DEFAULT_TIMEOUT))
     verbose = bool(config.get("verbose", False))
+    quiet = bool(config.get("quiet", False))
     # Never use config["wordlist"] — hash module sets password lists there during RUN ALL.
     wordlist_path: str | None = (
         config.get("subdomain_wordlist") or WORDLIST_SUBDOMAINS
@@ -602,6 +609,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         n_words,
         domain,
         lambda: snapshot(),
+        quiet=quiet,
     )
 
     max_inflight = min(max(threads * 4, threads), 4096)
@@ -684,7 +692,29 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     base["status"] = "success"
 
     console.print()
-    _render_results_table(found)
+    if quiet:
+        ch_subs = [
+            x
+            for x in found
+            if str(x.get("risk", "LOW")).upper() in ("CRITICAL", "HIGH")
+        ]
+        if ch_subs:
+            display_findings(
+                [
+                    {
+                        "risk": str(x.get("risk", "LOW")).upper(),
+                        "category": str(x.get("category") or "subdomain"),
+                        "value": _format_hit_line(x).strip(),
+                        "note": str(x.get("cname") or "").strip(),
+                    }
+                    for x in ch_subs
+                ],
+                module="subdomain_enum",
+                verbose=verbose,
+                config=config,
+            )
+    else:
+        _render_results_table(found)
     if base["takeover_candidates"]:
         console.print()
         console.print(

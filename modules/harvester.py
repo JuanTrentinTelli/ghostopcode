@@ -1001,6 +1001,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     depth = max(0, int(config.get("depth", 3)))
     save_files = bool(config.get("save_files", True))
     verbose = bool(config.get("verbose", False))
+    quiet = bool(config.get("quiet", False))
     max_crawl = int(config.get("max_crawl_urls") or MAX_CRAWL_URLS_DEFAULT)
 
     errors: list[str] = []
@@ -1152,15 +1153,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 ],
                 module="harvester",
                 verbose=bool(config.get("verbose")),
+                config=config,
             )
-        for leak in config_leaks:
-            for s in leak.get("secrets", [])[:6]:
-                console.print(
-                    Text(
-                        f"       ├── {s['type']}: {mask_secret_display(s['value'])}",
-                        style=C_ERR,
+        if not quiet:
+            for leak in config_leaks:
+                for s in leak.get("secrets", [])[:6]:
+                    console.print(
+                        Text(
+                            f"       ├── {s['type']}: {mask_secret_display(s['value'])}",
+                            style=C_ERR,
+                        )
                     )
-                )
 
         # Merge brute-found interesting URLs into file set
         for row in brute_rows:
@@ -1263,7 +1266,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                             "metadata": meta,
                         }
                     )
-                    if downloaded:
+                    if downloaded and (
+                        not quiet or spec.get("risk") in ("CRITICAL", "HIGH")
+                    ):
                         console.print(
                             Text(
                                 f"   [{spec['risk']:<8}] {fn[:40]:<42} {_human_size(size_b):>8}",
@@ -1350,63 +1355,64 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         intel["files_total"] = len(files_out)
         intel["leaks_total"] = len(config_leaks)
 
-        for fo in files_out:
-            if not fo.get("downloaded"):
-                continue
-            md = fo.get("metadata") or {}
-            ft = fo.get("type") or ""
-            if ft == "pdf":
-                console.print(Text(f"   {fo['filename']}", style=C_DIM))
-                if md.get("error"):
-                    console.print(
-                        Text(f"       └── [i] {md['error']}", style=C_WARN),
-                    )
-                elif not _pdf_meta_meaningful(md):
-                    console.print(
-                        Text(
-                            "       └── [i] No metadata found (PDF may be scanned/image-only)",
-                            style=C_MUTED,
-                        ),
-                    )
-                else:
+        if not quiet:
+            for fo in files_out:
+                if not fo.get("downloaded"):
+                    continue
+                md = fo.get("metadata") or {}
+                ft = fo.get("type") or ""
+                if ft == "pdf":
+                    console.print(Text(f"   {fo['filename']}", style=C_DIM))
+                    if md.get("error"):
+                        console.print(
+                            Text(f"       └── [i] {md['error']}", style=C_WARN),
+                        )
+                    elif not _pdf_meta_meaningful(md):
+                        console.print(
+                            Text(
+                                "       └── [i] No metadata found (PDF may be scanned/image-only)",
+                                style=C_MUTED,
+                            ),
+                        )
+                    else:
+                        for label, key in (
+                            ("Author", "author"),
+                            ("Creator", "creator"),
+                            ("Producer", "producer"),
+                            ("Created", "creation_date"),
+                        ):
+                            v = md.get(key)
+                            if v and str(v).strip():
+                                console.print(
+                                    Text(
+                                        f"       ├── {label:<9}: {str(v)[:75]}",
+                                        style=C_MUTED,
+                                    ),
+                                )
+                        ef = md.get("emails_found") or md.get("emails_in_doc")
+                        if ef:
+                            es = ", ".join(ef) if isinstance(ef, list) else str(ef)
+                            console.print(
+                                Text(f"       └── Emails   : {es[:200]}", style=C_MUTED),
+                            )
+                elif ft in ("docx", "xlsx") and _pdf_meta_meaningful(md):
+                    console.print(Text(f"   {fo['filename']}", style=C_DIM))
                     for label, key in (
                         ("Author", "author"),
-                        ("Creator", "creator"),
-                        ("Producer", "producer"),
-                        ("Created", "creation_date"),
+                        ("Last modified", "last_modified_by"),
+                        ("Software", "software"),
+                        ("Internal path", "internal_paths"),
                     ):
                         v = md.get(key)
-                        if v and str(v).strip():
+                        if v:
+                            if isinstance(v, list):
+                                v = v[0] if v else ""
                             console.print(
-                                Text(
-                                    f"       ├── {label:<9}: {str(v)[:75]}",
-                                    style=C_MUTED,
-                                ),
+                                Text(f"       ├── {label}: {str(v)[:70]}", style=C_MUTED),
                             )
-                    ef = md.get("emails_found") or md.get("emails_in_doc")
-                    if ef:
-                        es = ", ".join(ef) if isinstance(ef, list) else str(ef)
-                        console.print(
-                            Text(f"       └── Emails   : {es[:200]}", style=C_MUTED),
-                        )
-            elif ft in ("docx", "xlsx") and _pdf_meta_meaningful(md):
-                console.print(Text(f"   {fo['filename']}", style=C_DIM))
-                for label, key in (
-                    ("Author", "author"),
-                    ("Last modified", "last_modified_by"),
-                    ("Software", "software"),
-                    ("Internal path", "internal_paths"),
-                ):
-                    v = md.get(key)
-                    if v:
-                        if isinstance(v, list):
-                            v = v[0] if v else ""
-                        console.print(
-                            Text(f"       ├── {label}: {str(v)[:70]}", style=C_MUTED),
-                        )
 
         # Email table
-        if emails_list:
+        if emails_list and not quiet:
             tbl = Table(
                 title=Text("Emails / identities", style=f"bold {C_PRI}"),
                 box=box.ROUNDED,
@@ -1424,33 +1430,34 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             console.print()
             console.print(tbl)
 
-        console.print()
-        console.print(Text(" [INTEL] Correlated signals", style=f"bold {C_PRI}"))
-        console.print(
-            Text(
-                f"   ├── Usernames     : {' · '.join(intel.get('usernames') or ['—'])}",
-                style=C_DIM,
-            )
-        )
-        console.print(
-            Text(
-                f"   ├── Internal path : {' · '.join((intel.get('internal_paths') or ['—'])[:3])}",
-                style=C_DIM,
-            )
-        )
-        console.print(
-            Text(
-                f"   ├── Software      : {' · '.join((intel.get('software_stack') or ['—'])[:4])}",
-                style=C_DIM,
-            )
-        )
-        if intel.get("ad_domain_guess"):
+        if not quiet:
+            console.print()
+            console.print(Text(" [INTEL] Correlated signals", style=f"bold {C_PRI}"))
             console.print(
                 Text(
-                    f"   └── AD guess      : {intel['ad_domain_guess']}",
-                    style=C_WARN,
+                    f"   ├── Usernames     : {' · '.join(intel.get('usernames') or ['—'])}",
+                    style=C_DIM,
                 )
             )
+            console.print(
+                Text(
+                    f"   ├── Internal path : {' · '.join((intel.get('internal_paths') or ['—'])[:3])}",
+                    style=C_DIM,
+                )
+            )
+            console.print(
+                Text(
+                    f"   ├── Software      : {' · '.join((intel.get('software_stack') or ['—'])[:4])}",
+                    style=C_DIM,
+                )
+            )
+            if intel.get("ad_domain_guess"):
+                console.print(
+                    Text(
+                        f"   └── AD guess      : {intel['ad_domain_guess']}",
+                        style=C_WARN,
+                    )
+                )
 
         duration = time.perf_counter() - t0
         unique_domains = {

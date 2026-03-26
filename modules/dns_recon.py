@@ -20,6 +20,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from utils.base_module import make_finding
+from utils.output import debug_log
 from utils.target_parser import Target
 
 # Terminal palette (aligned with framework identity)
@@ -46,30 +48,91 @@ _SRV_PROBES = (
 )
 
 
-def query_record(domain: str, record_type: str, timeout: int) -> list[str]:
+def query_record(
+    domain: str,
+    record_type: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> list[str]:
     """
     Query a single DNS record type.
 
     Returns list of strings with results, or empty list on any failure.
     Never raises.
     """
+    debug_log(
+        "dns",
+        detail=f"query {record_type} for {domain}",
+        config=config,
+    )
+    t0 = time.perf_counter()
     try:
         resolver = dns.resolver.Resolver(configure=True)
         resolver.timeout = float(timeout)
         resolver.lifetime = float(timeout)
         ans = resolver.resolve(domain, record_type)
-        return [str(r) for r in ans]
+        out = [str(r) for r in ans]
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result=f"{len(out)} record(s)",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
+        return out
     except dns.resolver.NXDOMAIN:
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result="NXDOMAIN",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return []
     except dns.resolver.NoAnswer:
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result="no answer",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return []
     except dns.resolver.Timeout:
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result=f"timeout after {timeout}s — no answer",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return []
-    except dns.exception.DNSException:
+    except dns.exception.DNSException as e:
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result=f"DNSException: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return []
-    except OSError:
+    except OSError as e:
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result=f"OSError: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return []
-    except Exception:  # noqa: BLE001 — contract: never raise
+    except Exception as e:  # noqa: BLE001 — contract: never raise
+        debug_log(
+            "dns",
+            detail=f"{record_type} result",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return []
 
 
@@ -116,10 +179,16 @@ def attempt_axfr(domain: str, nameserver: str, timeout: int) -> list[str] | None
         return None
 
 
-def _mx_records(domain: str, timeout: int) -> tuple[list[dict[str, Any]], list[str]]:
+def _mx_records(
+    domain: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Resolve MX into structured rows; append timeout/no answer to errors."""
     errors: list[str] = []
     out: list[dict[str, Any]] = []
+    debug_log("dns", detail=f"query MX for {domain}", config=config)
+    t0 = time.perf_counter()
     try:
         resolver = dns.resolver.Resolver(configure=True)
         resolver.timeout = float(timeout)
@@ -128,21 +197,67 @@ def _mx_records(domain: str, timeout: int) -> tuple[list[dict[str, Any]], list[s
         for r in ans:
             out.append({"host": str(r.exchange).rstrip("."), "priority": int(r.preference)})
         out.sort(key=lambda x: x["priority"])
+        debug_log(
+            "dns",
+            detail="MX result",
+            result=f"{len(out)} record(s)",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.resolver.NXDOMAIN:
-        pass
+        debug_log(
+            "dns",
+            detail="MX result",
+            result="NXDOMAIN",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.resolver.NoAnswer:
-        pass
+        debug_log(
+            "dns",
+            detail="MX result",
+            result="no answer",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.resolver.Timeout:
         errors.append(f"MX query timeout for {domain}")
+        debug_log(
+            "dns",
+            detail="MX result",
+            result=f"timeout after {timeout}s",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.exception.DNSException as e:
         errors.append(f"MX: {e}")
+        debug_log(
+            "dns",
+            detail="MX result",
+            result=f"DNSException: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except Exception as e:  # noqa: BLE001
         errors.append(f"MX: {e}")
+        debug_log(
+            "dns",
+            detail="MX result",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     return out, errors
 
 
-def _soa_record(domain: str, timeout: int) -> tuple[dict[str, Any] | None, list[str]]:
+def _soa_record(
+    domain: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
+    debug_log("dns", detail=f"query SOA for {domain}", config=config)
+    t0 = time.perf_counter()
     try:
         resolver = dns.resolver.Resolver(configure=True)
         resolver.timeout = float(timeout)
@@ -151,6 +266,13 @@ def _soa_record(domain: str, timeout: int) -> tuple[dict[str, Any] | None, list[
         r = ans[0]
         mname = str(r.mname).rstrip(".")
         rname = str(r.rname).rstrip(".").replace(".", "@", 1) if r.rname else ""
+        debug_log(
+            "dns",
+            detail="SOA result",
+            result="1 record",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return (
             {
                 "mname": mname,
@@ -160,23 +282,64 @@ def _soa_record(domain: str, timeout: int) -> tuple[dict[str, Any] | None, list[
             errors,
         )
     except dns.resolver.NXDOMAIN:
+        debug_log(
+            "dns",
+            detail="SOA result",
+            result="NXDOMAIN",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return None, errors
     except dns.resolver.NoAnswer:
+        debug_log(
+            "dns",
+            detail="SOA result",
+            result="no answer",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return None, errors
     except dns.resolver.Timeout:
         errors.append(f"SOA query timeout for {domain}")
+        debug_log(
+            "dns",
+            detail="SOA result",
+            result=f"timeout after {timeout}s",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.exception.DNSException as e:
         errors.append(f"SOA: {e}")
+        debug_log(
+            "dns",
+            detail="SOA result",
+            result=f"DNSException: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except Exception as e:  # noqa: BLE001
         errors.append(f"SOA: {e}")
+        debug_log(
+            "dns",
+            detail="SOA result",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     return None, errors
 
 
-def _srv_records(domain: str, timeout: int) -> tuple[list[str], list[str]]:
+def _srv_records(
+    domain: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     found: list[str] = []
     for prefix in _SRV_PROBES:
         name = f"{prefix}.{domain}"
+        debug_log("dns", detail=f"query SRV {name}", config=config)
+        t0 = time.perf_counter()
         try:
             resolver = dns.resolver.Resolver(configure=True)
             resolver.timeout = float(timeout)
@@ -186,22 +349,70 @@ def _srv_records(domain: str, timeout: int) -> tuple[list[str], list[str]]:
                 found.append(
                     f"{name} → {r.priority} {r.weight} {r.port} {r.target}".rstrip()
                 )
+            debug_log(
+                "dns",
+                detail=f"SRV {prefix}",
+                result=f"{len(ans)} record(s)",
+                elapsed=time.perf_counter() - t0,
+                config=config,
+            )
         except dns.resolver.NXDOMAIN:
+            debug_log(
+                "dns",
+                detail=f"SRV {prefix}",
+                result="NXDOMAIN",
+                elapsed=time.perf_counter() - t0,
+                config=config,
+            )
             continue
         except dns.resolver.NoAnswer:
+            debug_log(
+                "dns",
+                detail=f"SRV {prefix}",
+                result="no answer",
+                elapsed=time.perf_counter() - t0,
+                config=config,
+            )
             continue
         except dns.resolver.Timeout:
             errors.append(f"SRV timeout: {name}")
+            debug_log(
+                "dns",
+                detail=f"SRV {prefix}",
+                result=f"timeout after {timeout}s",
+                elapsed=time.perf_counter() - t0,
+                config=config,
+            )
         except dns.exception.DNSException:
+            debug_log(
+                "dns",
+                detail=f"SRV {prefix}",
+                result="DNSException",
+                elapsed=time.perf_counter() - t0,
+                config=config,
+            )
             continue
         except Exception:  # noqa: BLE001
+            debug_log(
+                "dns",
+                detail=f"SRV {prefix}",
+                result="error",
+                elapsed=time.perf_counter() - t0,
+                config=config,
+            )
             continue
     return found, errors
 
 
-def _caa_records(domain: str, timeout: int) -> tuple[list[str], list[str]]:
+def _caa_records(
+    domain: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     out: list[str] = []
+    debug_log("dns", detail=f"query CAA for {domain}", config=config)
+    t0 = time.perf_counter()
     try:
         resolver = dns.resolver.Resolver(configure=True)
         resolver.timeout = float(timeout)
@@ -211,17 +422,663 @@ def _caa_records(domain: str, timeout: int) -> tuple[list[str], list[str]]:
             tag = r.tag.decode() if isinstance(r.tag, bytes) else str(r.tag)
             val = r.value.decode() if isinstance(r.value, bytes) else str(r.value)
             out.append(f"flags={r.flags} tag={tag} value={val}")
+        debug_log(
+            "dns",
+            detail="CAA result",
+            result=f"{len(out)} record(s)",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.resolver.NXDOMAIN:
-        pass
+        debug_log(
+            "dns",
+            detail="CAA result",
+            result="NXDOMAIN",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.resolver.NoAnswer:
-        pass
+        debug_log(
+            "dns",
+            detail="CAA result",
+            result="no answer",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.resolver.Timeout:
         errors.append(f"CAA query timeout for {domain}")
+        debug_log(
+            "dns",
+            detail="CAA result",
+            result=f"timeout after {timeout}s",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except dns.exception.DNSException as e:
         errors.append(f"CAA: {e}")
+        debug_log(
+            "dns",
+            detail="CAA result",
+            result=f"DNSException: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     except Exception as e:  # noqa: BLE001
         errors.append(f"CAA: {e}")
+        debug_log(
+            "dns",
+            detail="CAA result",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
     return out, errors
+
+
+# --- Email surface intelligence (SPF / DMARC / DKIM) ---------------------------
+
+def _txt_rdata_join(rdata: Any) -> str:
+    """Join TXT rdata chunks into one string (dnspython may use bytes)."""
+    try:
+        parts = getattr(rdata, "strings", None)
+        if parts:
+            out: list[str] = []
+            for x in parts:
+                if isinstance(x, (bytes, bytearray)):
+                    out.append(
+                        bytes(x).decode("utf-8", errors="replace").strip('"').strip("'")
+                    )
+                else:
+                    out.append(str(x).strip('"').strip("'"))
+            return "".join(out)
+    except (TypeError, AttributeError, UnicodeError):
+        pass
+    return str(rdata).strip('"')
+
+
+COMMON_DKIM_SELECTORS: tuple[str, ...] = (
+    "default",
+    "google",
+    "mail",
+    "email",
+    "dkim",
+    "selector1",
+    "selector2",
+    "k1",
+    "k2",
+    "zoho",
+    "sendgrid",
+    "mailchimp",
+    "mailgun",
+    "amazonses",
+    "mandrill",
+    "postmark",
+    "s1",
+    "s2",
+    "smtp",
+    "mx",
+)
+
+
+def parse_spf(txt_records: list[str]) -> dict[str, Any]:
+    """
+    Parse SPF from apex TXT strings; assess spoofing relevance (not just presence).
+    """
+    spf_record: str | None = None
+    for raw in txt_records:
+        s = raw.strip().strip('"').strip("'")
+        low = s.lower()
+        if low.startswith("v=spf1"):
+            spf_record = s
+            break
+
+    if not spf_record:
+        return {
+            "found": False,
+            "record": None,
+            "risk": "HIGH",
+            "risk_reason": (
+                "No SPF record — anyone can send email claiming to be this domain "
+                "(receivers that only check SPF see no authorized senders list)"
+            ),
+            "mechanisms": [],
+            "all_policy": None,
+            "includes_count": 0,
+        }
+
+    mechanisms: list[dict[str, str]] = []
+    all_policy: str | None = None
+    too_permissive = False
+    has_all = False
+
+    parts = spf_record.split()
+    for part in parts[1:]:
+        part_lower = part.lower()
+        mech_core = part_lower.lstrip("+-")
+
+        # Terminal all — must not use mech_core == "all" alone: "-all".lstrip("+-") == "all"
+        # and would wrongly flag HardFail as overly permissive.
+        if part_lower in ("+all", "~all", "-all", "?all", "all"):
+            all_policy = (
+                part_lower
+                if part_lower in ("+all", "~all", "-all", "?all")
+                else "+all"
+            )
+            has_all = True
+            if part_lower in ("+all", "?all", "all"):
+                too_permissive = True
+            continue
+
+        if part_lower.startswith("include:"):
+            mechanisms.append(
+                {
+                    "type": "include",
+                    "value": part[8:],
+                    "note": f"Delegates policy to {part[8:]}",
+                }
+            )
+        elif part_lower.startswith("ip4:"):
+            ip_range = part[4:]
+            mechanisms.append(
+                {
+                    "type": "ip4",
+                    "value": ip_range,
+                    "note": f"Authorizes IPv4 range {ip_range}",
+                }
+            )
+            if ip_range in ("0.0.0.0/0", "0.0.0.0/1"):
+                too_permissive = True
+        elif part_lower.startswith("ip6:"):
+            mechanisms.append(
+                {
+                    "type": "ip6",
+                    "value": part[4:],
+                    "note": f"Authorizes IPv6 range {part[4:]}",
+                }
+            )
+            if part[4:].lower() in ("::/0", "::/1"):
+                too_permissive = True
+        elif mech_core in ("a", "mx", "ptr"):
+            mechanisms.append(
+                {
+                    "type": mech_core,
+                    "value": part,
+                    "note": f"Authorizes {mech_core.upper()} lookup for senders",
+                }
+            )
+        elif part_lower.startswith("redirect="):
+            mechanisms.append(
+                {
+                    "type": "redirect",
+                    "value": part.partition("=")[2],
+                    "note": f"SPF redirects to {part.partition('=')[2]}",
+                }
+            )
+        elif part_lower.startswith("exists:"):
+            mechanisms.append(
+                {
+                    "type": "exists",
+                    "value": part[7:],
+                    "note": "Dynamic exists: mechanism",
+                }
+            )
+
+    includes_count = sum(1 for m in mechanisms if m["type"] == "include")
+
+    # CRITICAL: +all, ?all, bare all, missing terminal all, or ip4/ip6 anycast (0.0.0.0/0, ::/0)
+    if too_permissive or not has_all:
+        risk = "CRITICAL"
+        if not has_all:
+            risk_reason = (
+                "No terminal 'all' mechanism — SPF is incomplete; many receivers "
+                "treat this as soft fail or ambiguous (spoofing often possible)"
+            )
+        elif all_policy == "+all":
+            risk_reason = (
+                "+all / all — effectively ANY host on the Internet may send as this domain"
+            )
+        elif all_policy == "?all":
+            risk_reason = (
+                "?all (Neutral) — failing SPF does not affect acceptance; no anti-spoofing"
+            )
+        else:
+            risk_reason = (
+                "Overly permissive SPF (e.g. 0.0.0.0/0 or ::/0) — broad sender authorization"
+            )
+    elif all_policy == "~all":
+        risk = "MEDIUM"
+        risk_reason = (
+            "~all (SoftFail) — unauthorized senders are marked, not rejected; upgrade to -all"
+        )
+    elif all_policy == "-all":
+        risk = "LOW"
+        risk_reason = (
+            "HardFail — unauthorized senders rejected. Good configuration"
+        )
+    else:
+        risk = "MEDIUM"
+        risk_reason = "SPF present but terminal policy unclear — verify alignment with DMARC"
+
+    return {
+        "found": True,
+        "record": spf_record,
+        "risk": risk,
+        "risk_reason": risk_reason,
+        "mechanisms": mechanisms,
+        "all_policy": all_policy,
+        "includes_count": includes_count,
+    }
+
+
+def fetch_and_parse_dmarc(domain: str, timeout: int) -> dict[str, Any]:
+    """Fetch _dmarc.<domain> TXT and parse tags; never raises."""
+    dmarc_domain = f"_dmarc.{domain.strip().rstrip('.')}"
+    dmarc_record: str | None = None
+    try:
+        resolver = dns.resolver.Resolver(configure=True)
+        resolver.timeout = float(timeout)
+        resolver.lifetime = float(timeout)
+        answers = resolver.resolve(dmarc_domain, "TXT")
+        for rdata in answers:
+            record = _txt_rdata_join(rdata)
+            if record.lower().startswith("v=dmarc1"):
+                dmarc_record = record
+                break
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not dmarc_record:
+        return {
+            "found": False,
+            "record": None,
+            "risk": "CRITICAL",
+            "risk_reason": (
+                "No DMARC record — receivers cannot enforce a consistent policy for "
+                "SPF/DKIM failures; spoofed mail is often delivered with no aggregate reporting"
+            ),
+            "policy": None,
+            "pct": None,
+            "rua": None,
+            "ruf": None,
+            "adkim": None,
+            "aspf": None,
+            "warnings": [],
+        }
+
+    tags: dict[str, str] = {}
+    for part in dmarc_record.split(";"):
+        part = part.strip()
+        if "=" in part:
+            key, _, value = part.partition("=")
+            tags[key.strip().lower()] = value.strip()
+
+    policy = (tags.get("p") or "none").lower()
+    sp = (tags.get("sp") or policy).lower()
+    pct_raw = tags.get("pct", "100")
+    try:
+        pct_int = int(str(pct_raw).rstrip("%").strip())
+    except (TypeError, ValueError):
+        pct_int = 100
+    pct = str(pct_int)
+    rua = tags.get("rua")
+    ruf = tags.get("ruf")
+    adkim = (tags.get("adkim") or "r").lower()
+    aspf = (tags.get("aspf") or "r").lower()
+
+    if policy == "none":
+        risk = "HIGH"
+        risk_reason = (
+            "DMARC p=none — monitoring only; failing SPF/DKIM does not change delivery "
+            "(common 'transition' state that often never tightens)"
+        )
+    elif policy == "quarantine":
+        if pct_int < 100:
+            risk = "MEDIUM"
+            risk_reason = (
+                f"DMARC p=quarantine at pct={pct} — only {pct}% of failing mail quarantined; "
+                f"the rest may still be delivered"
+            )
+        else:
+            risk = "LOW"
+            risk_reason = (
+                "DMARC p=quarantine at 100% — failing mail should be junked/foldered"
+            )
+    elif policy == "reject":
+        risk = "LOW"
+        risk_reason = "DMARC p=reject — failing mail should be blocked at the border"
+    else:
+        risk = "MEDIUM"
+        risk_reason = f"Unusual or unknown DMARC p={policy!r} — verify manually"
+
+    warnings: list[str] = []
+    if not rua:
+        warnings.append("No rua= — no aggregate DMARC reports to a mailbox you control")
+    if adkim == "r":
+        warnings.append("adkim=r (relaxed DKIM alignment) — slightly weaker than strict")
+    if aspf == "r":
+        warnings.append("aspf=r (relaxed SPF alignment) — slightly weaker than strict")
+
+    return {
+        "found": True,
+        "record": dmarc_record,
+        "risk": risk,
+        "risk_reason": risk_reason,
+        "policy": policy,
+        "sp": sp,
+        "pct": pct,
+        "rua": rua,
+        "ruf": ruf,
+        "adkim": adkim,
+        "aspf": aspf,
+        "warnings": warnings,
+    }
+
+
+def check_common_dkim_selectors(domain: str, dkim_timeout: float = 2.0) -> dict[str, Any]:
+    """Probe common selector._domainkey names; short per-query timeout."""
+    dom = domain.strip().rstrip(".")
+    found_selectors: list[dict[str, str]] = []
+
+    for selector in COMMON_DKIM_SELECTORS:
+        name = f"{selector}._domainkey.{dom}"
+        try:
+            resolver = dns.resolver.Resolver(configure=True)
+            resolver.timeout = float(dkim_timeout)
+            resolver.lifetime = float(dkim_timeout)
+            answers = resolver.resolve(name, "TXT")
+            for rdata in answers:
+                record = _txt_rdata_join(rdata)
+                low = record.lower()
+                if "v=dkim1" in low or "p=" in low:
+                    preview = record[:100] + "…" if len(record) > 100 else record
+                    found_selectors.append({"selector": selector, "record": preview})
+                    break
+        except Exception:  # noqa: BLE001
+            continue
+
+    if not found_selectors:
+        return {
+            "found": False,
+            "selectors": [],
+            "risk": "MEDIUM",
+            "risk_reason": (
+                "No DKIM TXT on common selectors — org may use a custom selector, "
+                "or outbound mail may be unsigned / third-party relay only"
+            ),
+        }
+
+    return {
+        "found": True,
+        "selectors": found_selectors,
+        "risk": "LOW",
+        "risk_reason": (
+            f"{len(found_selectors)} DKIM publication(s) found (common selectors) — "
+            "keys published for signing"
+        ),
+    }
+
+
+def assess_email_risk(email_security: dict[str, Any]) -> dict[str, Any]:
+    """Worst-of-three component risks plus spoofing narrative for reports."""
+    spf = email_security.get("spf") or {}
+    dmarc = email_security.get("dmarc") or {}
+    dkim = email_security.get("dkim") or {}
+
+    risks = [
+        str(spf.get("risk") or "HIGH"),
+        str(dmarc.get("risk") or "HIGH"),
+        str(dkim.get("risk") or "MEDIUM"),
+    ]
+    risk_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    overall_risk = min(
+        risks,
+        key=lambda r: risk_order.index(r) if r in risk_order else 99,
+    )
+
+    spf_ok = bool(spf.get("found")) and spf.get("all_policy") == "-all"
+    dmarc_ok = bool(dmarc.get("found")) and (dmarc.get("policy") or "").lower() == "reject"
+    dkim_ok = bool(dkim.get("found"))
+
+    if not spf.get("found") and not dmarc.get("found"):
+        spoofing = (
+            "TRIVIAL — no SPF and no DMARC; domain is trivially impersonable in many flows"
+        )
+    elif not dmarc.get("found") or (dmarc.get("policy") or "").lower() == "none":
+        spoofing = (
+            "LIKELY — DMARC missing or p=none; receivers rarely block spoofed mail "
+            "on policy alone"
+        )
+    elif str(spf.get("risk")) in ("CRITICAL", "HIGH"):
+        spoofing = "POSSIBLE — SPF weak or absent; alignment and relay abuse remain viable"
+    elif spf_ok and dmarc_ok:
+        spoofing = (
+            "UNLIKELY (policy) — SPF HardFail + DMARC reject is strong; still test "
+            "subdomains and third-party senders"
+        )
+    else:
+        spoofing = "PARTIAL — some controls exist but enforcement or coverage is incomplete"
+
+    return {
+        "overall_risk": overall_risk,
+        "spoofing_potential": spoofing,
+        "spf_ok": spf_ok,
+        "dmarc_ok": dmarc_ok,
+        "dkim_ok": dkim_ok,
+    }
+
+
+def parse_email_security(
+    domain: str,
+    txt_records: list[str],
+    timeout: int,
+) -> dict[str, Any]:
+    """
+    SPF from apex TXT + live DMARC + DKIM selector probes.
+    Never raises — returns minimal safe structure on failure.
+    """
+    try:
+        safe_timeout = max(1, int(timeout))
+        result: dict[str, Any] = {
+            "spf": parse_spf(txt_records),
+            "dmarc": fetch_and_parse_dmarc(domain, safe_timeout),
+            "dkim": check_common_dkim_selectors(domain, 2.0),
+        }
+        result["risk_summary"] = assess_email_risk(result)
+        return result
+    except Exception:  # noqa: BLE001
+        return {
+            "spf": {
+                "found": False,
+                "record": None,
+                "risk": "HIGH",
+                "risk_reason": "SPF analysis failed — inspect TXT manually",
+                "mechanisms": [],
+                "all_policy": None,
+                "includes_count": 0,
+            },
+            "dmarc": {
+                "found": False,
+                "record": None,
+                "risk": "HIGH",
+                "risk_reason": "DMARC analysis failed — inspect _dmarc TXT manually",
+                "policy": None,
+                "pct": None,
+                "rua": None,
+                "ruf": None,
+                "adkim": None,
+                "aspf": None,
+                "warnings": [],
+            },
+            "dkim": {
+                "found": False,
+                "selectors": [],
+                "risk": "MEDIUM",
+                "risk_reason": "DKIM probe failed — try custom selectors",
+            },
+            "risk_summary": {
+                "overall_risk": "HIGH",
+                "spoofing_potential": "Assessment unavailable (parser error)",
+                "spf_ok": False,
+                "dmarc_ok": False,
+                "dkim_ok": False,
+            },
+        }
+
+
+def _risk_style_for_email(risk: str) -> str:
+    r = (risk or "").upper()
+    if r == "CRITICAL":
+        return C_ERR
+    if r == "HIGH":
+        return C_WARN
+    if r == "MEDIUM":
+        return C_DIM
+    if r == "LOW":
+        return C_PRI
+    return C_MUTED
+
+
+def _email_security_table_row_status(
+    label: str,
+    block: dict[str, Any],
+) -> tuple[str, str]:
+    """Human-readable status cell + risk string."""
+    if label == "SPF":
+        if not block.get("found"):
+            return "NOT FOUND — " + str(block.get("risk_reason") or ""), str(
+                block.get("risk") or "HIGH"
+            )
+        pol = block.get("all_policy") or "—"
+        short = str(block.get("risk_reason") or "")[:72]
+        if len(str(block.get("risk_reason") or "")) > 72:
+            short += "…"
+        return f"{pol} — {short}", str(block.get("risk") or "MEDIUM")
+    if label == "DMARC":
+        if not block.get("found"):
+            return "NOT FOUND — " + str(block.get("risk_reason") or ""), str(
+                block.get("risk") or "CRITICAL"
+            )
+        p = block.get("policy") or "?"
+        pct = block.get("pct")
+        tail = str(block.get("risk_reason") or "")[:56]
+        if len(str(block.get("risk_reason") or "")) > 56:
+            tail += "…"
+        return f"p={p} pct={pct} — {tail}", str(block.get("risk") or "MEDIUM")
+    # DKIM
+    if not block.get("found"):
+        return "NOT FOUND (common selectors) — " + str(block.get("risk_reason") or ""), str(
+            block.get("risk") or "MEDIUM"
+        )
+    sel = block.get("selectors") or []
+    names = ", ".join(s.get("selector", "?") for s in sel[:4])
+    if len(sel) > 4:
+        names += ", …"
+    return f"selector(s): {names} — {block.get('risk_reason', '')[:48]}", str(
+        block.get("risk") or "LOW"
+    )
+
+
+def _render_email_security_panel(email_security: dict[str, Any], quiet: bool) -> None:
+    if quiet:
+        return
+    console.print()
+    console.print(Text(" [EMAIL SECURITY]", style=f"bold {C_PRI}"))
+    table = Table(
+        box=box.HEAVY,
+        border_style=C_ACCENT,
+        header_style=f"bold {C_DIM}",
+        show_lines=True,
+    )
+    table.add_column("Control", style=C_PRI, no_wrap=True, width=8)
+    table.add_column("Status", style=C_DIM)
+    table.add_column("Risk", style=C_MUTED, width=12)
+
+    for label, key in (("SPF", "spf"), ("DMARC", "dmarc"), ("DKIM", "dkim")):
+        block = email_security.get(key) or {}
+        status_txt, risk = _email_security_table_row_status(label, block)
+        if len(status_txt) > 86:
+            status_txt = status_txt[:83] + "…"
+        risk_cell = Text(f"[{risk}]", style=_risk_style_for_email(risk))
+        table.add_row(label, status_txt, risk_cell)
+
+    console.print(table)
+
+    rs = email_security.get("risk_summary") or {}
+    spoof = rs.get("spoofing_potential") or "—"
+    overall = rs.get("overall_risk") or "—"
+    console.print()
+    console.print(
+        Text.assemble(
+            (" [INTEL] Email spoofing assessment:\n", f"bold {C_PRI}"),
+            ("   └── ", C_MUTED),
+            ("Overall: ", C_DIM),
+            (f"{overall}", _risk_style_for_email(str(overall))),
+            ("  ·  ", C_MUTED),
+            (spoof, C_DIM),
+        )
+    )
+
+
+def _apply_email_security_findings(
+    base: dict[str, Any],
+    email_security: dict[str, Any],
+) -> None:
+    """Attach structured intel + ModuleResult-style finding rows for pack_session_result."""
+    base["email_security"] = email_security
+    critical: list[dict[str, Any]] = list(base.get("critical_findings") or [])
+    high: list[dict[str, Any]] = list(base.get("high_findings") or [])
+
+    spf = email_security.get("spf") or {}
+    dmarc = email_security.get("dmarc") or {}
+    spf_r = str(spf.get("risk") or "")
+    dm_r = str(dmarc.get("risk") or "")
+
+    if spf_r == "CRITICAL":
+        critical.append(
+            make_finding(
+                value=spf.get("record") or "SPF",
+                category="spf_misconfiguration",
+                risk="CRITICAL",
+                note=str(spf.get("risk_reason") or ""),
+                metadata={"control": "SPF"},
+            )
+        )
+    elif spf_r == "HIGH":
+        high.append(
+            make_finding(
+                value=spf.get("record") or "SPF missing",
+                category="spf_missing_or_weak",
+                risk="HIGH",
+                note=str(spf.get("risk_reason") or ""),
+                metadata={"control": "SPF"},
+            )
+        )
+
+    if dm_r == "CRITICAL":
+        critical.append(
+            make_finding(
+                value=dmarc.get("record") or "_dmarc TXT missing",
+                category="dmarc_missing",
+                risk="CRITICAL",
+                note=str(dmarc.get("risk_reason") or ""),
+                metadata={"control": "DMARC"},
+            )
+        )
+    elif dm_r == "HIGH":
+        high.append(
+            make_finding(
+                value=dmarc.get("record") or "DMARC",
+                category="dmarc_monitoring_only",
+                risk="HIGH",
+                note=str(dmarc.get("risk_reason") or ""),
+                metadata={"control": "DMARC"},
+            )
+        )
+
+    if critical:
+        base["critical_findings"] = critical
+    if high:
+        base["high_findings"] = high
 
 
 def detect_tech_from_dns(records: dict[str, Any]) -> list[str]:
@@ -544,6 +1401,7 @@ def _run_axfr_ui(
     timeout: int,
     verbose: bool,
     errors: list[str],
+    quiet: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     axfr_state: dict[str, Any] = {
         "attempted": bool(ns_list),
@@ -555,7 +1413,8 @@ def _run_axfr_ui(
         axfr_state["attempted"] = False
         return axfr_state, errors
 
-    console.print(Text("\n [AXFR] Attempting zone transfer...", style=f"bold {C_WARN}"))
+    if not quiet:
+        console.print(Text("\n [AXFR] Attempting zone transfer...", style=f"bold {C_WARN}"))
     for i, ns in enumerate(ns_list):
         status_txt = "REFUSED"
         detail = "(expected)"
@@ -602,16 +1461,17 @@ def _run_axfr_ui(
             console.print()
             break
 
-        sym = "├──" if i < len(ns_list) - 1 else "└──"
-        console.print(
-            Text.assemble(
-                (f"   {sym} ", C_MUTED),
-                (f"{ns}", C_DIM),
-                ("  →  ", C_MUTED),
-                (status_txt, C_DIM),
-                (f"  {detail}" if detail else "", C_MUTED),
+        if not quiet:
+            sym = "├──" if i < len(ns_list) - 1 else "└──"
+            console.print(
+                Text.assemble(
+                    (f"   {sym} ", C_MUTED),
+                    (f"{ns}", C_DIM),
+                    ("  →  ", C_MUTED),
+                    (status_txt, C_DIM),
+                    (f"  {detail}" if detail else "", C_MUTED),
+                )
             )
-        )
 
     return axfr_state, errors
 
@@ -624,6 +1484,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     """
     t0 = time.perf_counter()
     verbose = bool(config.get("verbose", False))
+    quiet = bool(config.get("quiet", False))
     timeout = int(config.get("timeout", 5) or 5)
     timeout = max(1, timeout)
 
@@ -657,7 +1518,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         ip_str = target.value
         try:
             rev = dns.reversename.from_address(ip_str)
-            ptr_strings = query_record(str(rev), "PTR", timeout)
+            ptr_strings = query_record(str(rev), "PTR", timeout, config)
             records["PTR"] = ptr_strings
             if not ptr_strings:
                 errors.append("No PTR record for this address")
@@ -667,13 +1528,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 console.print(Text(f"  [WARN] {e}", style=C_WARN))
 
         rows = _gather_table_rows(records)
-        if rows:
+        if rows and not quiet:
             _render_records_table(rows)
-        else:
+        elif not rows:
             console.print(Text("  (no PTR records)", style=C_MUTED))
 
         technologies = detect_tech_from_dns(records)
-        if technologies:
+        if technologies and not quiet:
             console.print(Text("\n [INTEL] Technologies identified via DNS:", style=f"bold {C_PRI}"))
             for tech, ev in _tech_evidence_lines(records):
                 console.print(
@@ -735,23 +1596,25 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         return base
 
     # Sequential queries per spec
-    records["A"] = query_record(domain, "A", timeout)
-    records["AAAA"] = query_record(domain, "AAAA", timeout)
-    mx_r, mx_e = _mx_records(domain, timeout)
+    records["A"] = query_record(domain, "A", timeout, config)
+    records["AAAA"] = query_record(domain, "AAAA", timeout, config)
+    mx_r, mx_e = _mx_records(domain, timeout, config)
     records["MX"] = mx_r
     errors.extend(mx_e)
-    records["NS"] = [n.rstrip(".") for n in query_record(domain, "NS", timeout)]
-    txt = query_record(domain, "TXT", timeout)
+    records["NS"] = [
+        n.rstrip(".") for n in query_record(domain, "NS", timeout, config)
+    ]
+    txt = query_record(domain, "TXT", timeout, config)
     records["TXT"] = txt
-    soa, soa_e = _soa_record(domain, timeout)
+    soa, soa_e = _soa_record(domain, timeout, config)
     if soa:
         records["SOA"] = soa
     errors.extend(soa_e)
-    records["CNAME"] = query_record(domain, "CNAME", timeout)
-    srv_r, srv_e = _srv_records(domain, timeout)
+    records["CNAME"] = query_record(domain, "CNAME", timeout, config)
+    srv_r, srv_e = _srv_records(domain, timeout, config)
     records["SRV"] = srv_r
     errors.extend(srv_e)
-    caa_r, caa_e = _caa_records(domain, timeout)
+    caa_r, caa_e = _caa_records(domain, timeout, config)
     records["CAA"] = caa_r
     errors.extend(caa_e)
 
@@ -760,16 +1623,22 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             console.print(Text(f"  [WARN] {e}", style=C_WARN))
 
     table_rows = _gather_table_rows(records)
-    if table_rows:
+    if table_rows and not quiet:
         _render_records_table(table_rows)
-    else:
+    elif not table_rows:
         console.print(Text("  (no records collected)", style=C_MUTED))
 
+    email_security = parse_email_security(domain, records["TXT"], timeout)
+    _render_email_security_panel(email_security, quiet)
+    _apply_email_security_findings(base, email_security)
+
     ns_for_axfr = list(records["NS"])
-    axfr_state, errors = _run_axfr_ui(domain, ns_for_axfr, timeout, verbose, errors)
+    axfr_state, errors = _run_axfr_ui(
+        domain, ns_for_axfr, timeout, verbose, errors, quiet=quiet
+    )
 
     technologies = detect_tech_from_dns(records)
-    if technologies:
+    if technologies and not quiet:
         console.print(Text("\n [INTEL] Technologies identified via DNS:", style=f"bold {C_PRI}"))
         for tech, ev in _tech_evidence_lines(records):
             console.print(

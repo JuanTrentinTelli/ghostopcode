@@ -23,6 +23,7 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT, USER_AGENT
+from utils.output import display_findings
 from utils.target_parser import Target
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -869,6 +870,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             return base
 
         base["base_url"] = resolved
+        quiet = bool(config.get("quiet", False))
         console.print(
             Panel(
                 Text(
@@ -895,7 +897,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 style=C_DIM,
             )
         )
-        if skipped_names:
+        if skipped_names and not quiet:
             console.print(
                 Text(f"       Skipped/low-pri: {' · '.join(skipped_names[:8])}", style=C_MUTED)
             )
@@ -978,17 +980,18 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                             sm_note = "EXPOSED [CRITICAL]" if smd.get("has_content") else "EXPOSED"
                         else:
                             sm_note = "not found"
-                    st = Text.assemble(
-                        (f"\n   [►] {name[:42]:<44}", C_PRI),
-                        (f"{pack['row']['size']:>8}", C_DIM),
-                    )
-                    console.print(st)
-                    console.print(
-                        Text(
-                            f"       Endpoints : {n_ep} · Secrets : {n_sc} · Source map: {sm_note}",
-                            style=C_MUTED,
+                    if not quiet:
+                        st = Text.assemble(
+                            (f"\n   [►] {name[:42]:<44}", C_PRI),
+                            (f"{pack['row']['size']:>8}", C_DIM),
                         )
-                    )
+                        console.print(st)
+                        console.print(
+                            Text(
+                                f"       Endpoints : {n_ep} · Secrets : {n_sc} · Source map: {sm_note}",
+                                style=C_MUTED,
+                            )
+                        )
         except KeyboardInterrupt:
             interrupted = True
             errors.append("Interrupted — partial JS recon results")
@@ -1022,45 +1025,74 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
         # --- Tables ---
         if endpoints_list:
-            console.print()
-            console.print(
-                Text(
-                    f" [ENDPOINTS] {len(endpoints_list)} discovered",
-                    style=f"bold {C_WARN}",
+            ep_ch = [
+                e
+                for e in endpoints_list
+                if e.get("risk") in ("CRITICAL", "HIGH")
+            ]
+            if quiet and ep_ch:
+                display_findings(
+                    [
+                        {
+                            "risk": str(e.get("risk") or "HIGH"),
+                            "category": str(e.get("category") or "js_endpoint"),
+                            "value": str(e.get("url") or ""),
+                            "note": str(e.get("source") or ""),
+                        }
+                        for e in ep_ch
+                    ],
+                    module="js_recon",
+                    verbose=verbose,
+                    config=config,
                 )
-            )
-            tbl = Table(box=box.ROUNDED, border_style=C_ACCENT)
-            tbl.add_column("Endpoint", style=C_DIM, max_width=44)
-            tbl.add_column("Source", style=C_MUTED)
-            tbl.add_column("Category", style=C_DIM)
-            tbl.add_column("Risk", style=C_DIM)
-            for ep in sorted(endpoints_list, key=lambda x: (x.get("risk", ""), x["url"]))[:45]:
-                rk = ep.get("risk", "INFO")
-                style = C_ERR if rk == "CRITICAL" else C_WARN if rk == "HIGH" else C_DIM
-                tbl.add_row(
-                    ep["url"][:200],
-                    ep.get("source", "—"),
-                    ep.get("category", "—"),
-                    Text(str(rk), style=style),
+            elif not quiet:
+                console.print()
+                console.print(
+                    Text(
+                        f" [ENDPOINTS] {len(endpoints_list)} discovered",
+                        style=f"bold {C_WARN}",
+                    )
                 )
-            console.print(tbl)
+                tbl = Table(box=box.ROUNDED, border_style=C_ACCENT)
+                tbl.add_column("Endpoint", style=C_DIM, max_width=44)
+                tbl.add_column("Source", style=C_MUTED)
+                tbl.add_column("Category", style=C_DIM)
+                tbl.add_column("Risk", style=C_DIM)
+                for ep in sorted(
+                    endpoints_list, key=lambda x: (x.get("risk", ""), x["url"])
+                )[:45]:
+                    rk = ep.get("risk", "INFO")
+                    style = C_ERR if rk == "CRITICAL" else C_WARN if rk == "HIGH" else C_DIM
+                    tbl.add_row(
+                        ep["url"][:200],
+                        ep.get("source", "—"),
+                        ep.get("category", "—"),
+                        Text(str(rk), style=style),
+                    )
+                console.print(tbl)
 
         if all_secrets:
-            console.print()
-            console.print(Text(" [!!!] SECRETS DETECTED", style=f"bold {C_ERR}"))
-            for s in all_secrets[:15]:
-                console.print(
-                    Text(
-                        f"   ├── [{s.get('risk')}] {s.get('type')} in {s.get('source')}",
-                        style=C_ERR,
+            sec_show = (
+                [s for s in all_secrets if s.get("risk") in ("CRITICAL", "HIGH")]
+                if quiet
+                else all_secrets[:15]
+            )
+            if sec_show:
+                console.print()
+                console.print(Text(" [!!!] SECRETS DETECTED", style=f"bold {C_ERR}"))
+                for s in sec_show:
+                    console.print(
+                        Text(
+                            f"   ├── [{s.get('risk')}] {s.get('type')} in {s.get('source')}",
+                            style=C_ERR,
+                        )
                     )
-                )
-                console.print(
-                    Text(
-                        f"   │              {s.get('value')} (confidence: {s.get('confidence')})",
-                        style=C_MUTED,
+                    console.print(
+                        Text(
+                            f"   │              {s.get('value')} (confidence: {s.get('confidence')})",
+                            style=C_MUTED,
+                        )
                     )
-                )
 
         exposed_maps = [
             m

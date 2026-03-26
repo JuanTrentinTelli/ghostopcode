@@ -14,12 +14,12 @@
   ██████  ██       ██████  ██████  ██████  ███████
 ```
 
-**v1.4.1 · by GhostOpcode · Python Recon Framework**
+**v1.5.0 · by GhostOpcode · Python Recon Framework**
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Kali-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.4.1-orange?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.5.0-orange?style=flat-square)
 
 > Offensive reconnaissance framework — 100% local, no external APIs (optional CVE lookup via NVD only)
 
@@ -42,7 +42,7 @@ CLI. **No command-line arguments required**; run it and follow the menu.
 
 | # | Module | What it does |
 |---|--------|--------------|
-| 1 | **DNS Recon** | Queries A, MX, NS, TXT, SOA records. Attempts zone transfer (AXFR). Infers technologies from DNS. |
+| 1 | **DNS Recon** | Queries A, MX, NS, TXT, SOA, CAA, SRV; zone transfer (AXFR). Infers technologies from DNS. **New:** full SPF/DMARC/DKIM analysis with spoofing/phishing risk assessment (domain targets). |
 | 2 | **Subdomain Enum** | Discovers subdomains via wordlist bruteforce. Detects wildcard DNS and subdomain takeover candidates. |
 | 3 | **WHOIS + Fingerprint** | Domain/IP registration data. Detects web server, CMS, CDN, and backend hints from HTTP headers. Audits SSL certificates. |
 | 4 | **Port Scan** | TCP port sweep (any range). Accurate service identification via **nmap -sV**. Banner grabbing. OS inference. |
@@ -157,6 +157,16 @@ Select modules:
 [0] RUN ALL — runs every module available for the target
 ```
 
+## Output modes
+
+| Mode | Selection | Behavior |
+|------|-----------|----------|
+| **Normal** | `[1]` (default) | Full terminal output |
+| **Quiet** | `[2]` | Shows only **CRITICAL** and **HIGH** severity lines; progress and module summaries stay visible |
+| **Debug** | `[3]` | Normal output plus subprocess, HTTP, and DNS trace logging (secrets masked) |
+
+Output mode is chosen interactively in the session options menu. **JSON and HTML reports are always written complete**, regardless of mode.
+
 ### Runtime options
 
 | Option | Description | Example |
@@ -216,7 +226,8 @@ Safe hosts for practice (no special permission needed):
 
 | Version | Changes |
 |---------|---------|
-| **v1.4.1** | Passive subdomain engine: **subfinder** (replaces the previous tool, which is broken on current Kali Linux) |
+| **v1.5.0** | SPF/DMARC/DKIM intelligence in DNS recon · quiet / debug output modes · `base_module` contract (`ModuleResult`, `make_finding`, `pack_session_result`) · SESSION COMPLETE severity uses aggregated `*_findings` · URL harvester `findings_flat` in reports · hash module auto-skipped on RUN ALL |
+| v1.4.1 | Passive subdomain engine: **subfinder** (replaces Amass; previous passive engine broken on current Kali Linux) |
 | v1.4.0 | WAF Detection · URL Harvester · passive subdomain enum · terminal verbosity |
 | v1.3.1 | Filter generic CVEs · logger hotfix |
 | v1.3.0 | **nmap -sV** integrated into port scan |
@@ -240,6 +251,6 @@ Safe hosts for practice (no special permission needed):
 
 ## Author
 
-**GhostOpcode** · v1.4.1 · Python Recon Framework
+**GhostOpcode** · v1.5.0 · Python Recon Framework
 
 [![GitHub](https://img.shields.io/badge/GitHub-JuanTrentinTelli-black?style=flat-square&logo=github)](https://github.com/JuanTrentinTelli/ghostopcode)

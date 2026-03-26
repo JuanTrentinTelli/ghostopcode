@@ -23,6 +23,7 @@ from rich.text import Text
 
 import whois
 from config import DEFAULT_TIMEOUT, USER_AGENT
+from utils.output import debug_log
 from utils.target_parser import Target
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -188,7 +189,11 @@ def _parse_nicbr_date(date_str: str | None) -> str | None:
     return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
 
-def whois_registrobr(domain: str, timeout: int) -> dict[str, Any]:
+def whois_registrobr(
+    domain: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Query WHOIS for Brazilian domains using system whois binary.
     The registro.br (NIC.br) uses a proprietary format that
@@ -198,6 +203,8 @@ def whois_registrobr(domain: str, timeout: int) -> dict[str, Any]:
     Returns a full normalized dict like whois_domain() on success, or {} on failure.
     Never raises.
     """
+    debug_log("subprocess", detail=f"whois {domain}", config=config)
+    t0 = time.perf_counter()
     try:
         result = subprocess.run(
             ["whois", domain],
@@ -209,7 +216,21 @@ def whois_registrobr(domain: str, timeout: int) -> dict[str, Any]:
         raw = (result.stdout or "") + (
             ("\n" + result.stderr) if result.stderr else ""
         )
-    except Exception:  # noqa: BLE001 — contract: never raise
+        debug_log(
+            "subprocess",
+            detail="whois finished",
+            result=f"exit {result.returncode} · {len(raw)} char(s) output",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
+    except Exception as e:  # noqa: BLE001 — contract: never raise
+        debug_log(
+            "subprocess",
+            detail=f"whois {domain}",
+            result=f"error: {type(e).__name__}",
+            elapsed=time.perf_counter() - t0,
+            config=config,
+        )
         return {}
 
     if not raw.strip():
@@ -310,7 +331,11 @@ def whois_registrobr(domain: str, timeout: int) -> dict[str, Any]:
     }
 
 
-def whois_domain(domain: str, timeout: int) -> dict[str, Any]:
+def whois_domain(
+    domain: str,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Query WHOIS for a domain and extract structured intelligence.
     Brazilian (.br) domains use the system whois binary + NIC.br parser;
@@ -345,10 +370,11 @@ def whois_domain(domain: str, timeout: int) -> dict[str, Any]:
                 )
             )
         else:
-            br_out = whois_registrobr(domain, timeout)
+            br_out = whois_registrobr(domain, timeout, config)
             if br_out:
                 return br_out
 
+    debug_log("info", detail=f"python-whois lookup {domain}", config=config)
     try:
         socket.setdefaulttimeout(float(timeout))
         w = whois.whois(domain)
@@ -672,7 +698,11 @@ def extract_from_html(html: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def http_fingerprint(target: Target, timeout: int) -> dict[str, Any]:
+def http_fingerprint(
+    target: Target,
+    timeout: int,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Single GET to HTTPS then HTTP root; capture headers, cookies, HTML snippet.
     Never raises.
@@ -714,9 +744,25 @@ def http_fingerprint(target: Target, timeout: int) -> dict[str, Any]:
 
     for scheme in ("https", "http"):
         url = f"{scheme}://{host}/"
+        debug_log("http", detail=f"GET {url} (fingerprint)", config=config)
+        t_http = time.perf_counter()
         resp = _attempt(url)
         if resp is None:
+            debug_log(
+                "http",
+                detail=f"{scheme.upper()} fingerprint",
+                result="no response (SSL error or connection failed)",
+                elapsed=time.perf_counter() - t_http,
+                config=config,
+            )
             continue
+        debug_log(
+            "http",
+            detail=f"{scheme.upper()} fingerprint response",
+            result=f"status {resp.status_code} · final URL len={len(resp.url or '')}",
+            elapsed=time.perf_counter() - t_http,
+            config=config,
+        )
         result["reachable"] = True
         result["protocol"] = scheme
         result["status_code"] = resp.status_code
@@ -1251,13 +1297,20 @@ def _print_stack(tech: dict[str, Any]) -> None:
     )
 
 
-def _print_flags(flags: list[dict[str, str]]) -> None:
+def _print_flags(flags: list[dict[str, str]], quiet: bool = False) -> None:
     if not flags:
+        return
+    shown = (
+        [f for f in flags if f.get("severity") in ("CRITICAL", "HIGH")]
+        if quiet
+        else flags
+    )
+    if not shown:
         return
     console.print(Text("\n [FLAGS] Security Issues Detected", style=f"bold {C_ERR}"))
     sev_style = {"CRITICAL": C_ERR, "HIGH": C_ERR, "MEDIUM": C_WARN, "LOW": C_MUTED}
-    for i, fl in enumerate(flags):
-        sym = "└──" if i == len(flags) - 1 else "├──"
+    for i, fl in enumerate(shown):
+        sym = "└──" if i == len(shown) - 1 else "├──"
         sev = fl.get("severity", "LOW")
         console.print(
             Text.assemble(
@@ -1276,6 +1329,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     t0 = time.perf_counter()
     timeout = int(config.get("timeout") or DEFAULT_TIMEOUT)
     timeout = max(1, timeout)
+    quiet = bool(config.get("quiet", False))
     errors: list[str] = []
 
     base: dict[str, Any] = {
@@ -1311,7 +1365,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     # Phase 1 — WHOIS
     whois_data: dict[str, Any] = {}
     if target.is_domain():
-        whois_data = whois_domain(target.value, timeout)
+        whois_data = whois_domain(target.value, timeout, config)
         if whois_data.get("error") and whois_data.get("error_message"):
             em = whois_data["error_message"]
             errors.append(f"WHOIS domain: {em}")
@@ -1319,12 +1373,14 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 console.print(
                     Text("   [!] WHOIS rate limit / throttling suspected", style=C_WARN),
                 )
-        _print_whois_domain(whois_data)
+        if not quiet:
+            _print_whois_domain(whois_data)
     else:
         whois_data = whois_ip(target.value, timeout)
         if whois_data.get("error") and whois_data.get("error_message"):
             errors.append(f"WHOIS IP: {whois_data['error_message']}")
-        _print_whois_ip(whois_data)
+        if not quiet:
+            _print_whois_ip(whois_data)
 
     base["whois"] = whois_data
 
@@ -1340,7 +1396,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
 
     # Phase 2 — HTTP fingerprint (independent)
-    http_data = http_fingerprint(target, timeout)
+    http_data = http_fingerprint(target, timeout, config)
     if not http_data.get("reachable"):
         errors.append("HTTP(S) root not reachable")
     base["http"] = {
@@ -1361,9 +1417,10 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     base["security_flags"] = flags
     base["technologies"] = _technologies_flat(tech)
 
-    _print_http(http_data)
-    _print_stack(tech)
-    _print_flags(flags)
+    if not quiet:
+        _print_http(http_data)
+        _print_stack(tech)
+    _print_flags(flags, quiet=quiet)
 
     elapsed = time.perf_counter() - t0
     ssl_i = tech.get("ssl") or {}

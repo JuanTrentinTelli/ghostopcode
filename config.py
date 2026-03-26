@@ -141,5 +141,5 @@ USER_AGENT = (
 OUTPUT_DIR = "output"
 
 # ── Meta ────────────────────────────────────────────────────────────────────
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 AUTHOR = "GhostOpcode"

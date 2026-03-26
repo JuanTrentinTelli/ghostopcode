@@ -583,12 +583,14 @@ class _DirEnumLiveDisplay:
         total: int,
         base_url: str,
         get_snapshot: Callable[[], tuple[int, int, int, float, float, list[str]]],
+        quiet: bool = False,
     ) -> None:
         self.progress = progress
         self.task_id = task_id
         self.total = total
         self.base_url = base_url
         self._snapshot = get_snapshot
+        self.quiet = quiet
 
     def __rich__(self) -> RenderableType:
         done, n_found, n_filt, elapsed, rps, recent = self._snapshot()
@@ -612,8 +614,10 @@ class _DirEnumLiveDisplay:
             (f" · {pct:.0f}%", C_MUTED),
         )
 
-        if recent:
-            hits_block: RenderableType = Group(
+        if self.quiet:
+            hits_block = Text("")
+        elif recent:
+            hits_block = Group(
                 *[_style_live_hit(ln) for ln in recent],
             )
         else:
@@ -775,6 +779,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     threads = max(1, int(config.get("threads") or DEFAULT_THREADS))
     timeout = max(1.0, float(config.get("timeout") or DEFAULT_TIMEOUT))
     verbose = bool(config.get("verbose", False))
+    quiet = bool(config.get("quiet", False))
 
     mode_raw = config.get("dir_enum_mode")
     mode = int(mode_raw) if mode_raw is not None else 1
@@ -1034,7 +1039,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             return dc, nf, ft, elapsed, rps, recent
 
         display = _DirEnumLiveDisplay(
-            progress, task_id, n_total, base_url, snapshot
+            progress, task_id, n_total, base_url, snapshot, quiet=quiet
         )
         panel = Panel(
             display,
@@ -1128,14 +1133,28 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["status"] = "success"
 
         critical_paths = [f for f in found_list if f.get("risk") == "CRITICAL"]
-        if critical_paths:
-            display_findings(
-                critical_paths,
-                module="dir_enum",
-                verbose=verbose,
-            )
-
-        _print_results_table(found_list)
+        if quiet:
+            ch_paths = [
+                f
+                for f in found_list
+                if f.get("risk") in ("CRITICAL", "HIGH")
+            ]
+            if ch_paths:
+                display_findings(
+                    ch_paths,
+                    module="dir_enum",
+                    verbose=verbose,
+                    config=config,
+                )
+        else:
+            if critical_paths:
+                display_findings(
+                    critical_paths,
+                    module="dir_enum",
+                    verbose=verbose,
+                    config=config,
+                )
+            _print_results_table(found_list)
 
         crit = len(rs["CRITICAL"])
         hi = len(rs["HIGH"])

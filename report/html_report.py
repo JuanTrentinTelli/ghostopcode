@@ -36,13 +36,31 @@ MODULE_LABELS: dict[str, str] = {
 
 def count_findings_by_risk(results: dict[str, Any]) -> dict[str, int]:
     """
-    Sum items in each risk_summary bucket across all module result dicts.
+    Sum risk across modules. Prefer normalized ``*_findings`` (contract) when
+    present; otherwise fall back to legacy ``risk_summary``.
     """
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     if not isinstance(results, dict):
         return counts
+    tier_keys = (
+        ("critical_findings", "CRITICAL"),
+        ("high_findings", "HIGH"),
+        ("medium_findings", "MEDIUM"),
+        ("low_findings", "LOW"),
+    )
     for data in results.values():
         if not isinstance(data, dict):
+            continue
+        tier_total = 0
+        for tk, _sev in tier_keys:
+            lst = data.get(tk)
+            if isinstance(lst, list):
+                tier_total += len(lst)
+        if tier_total > 0:
+            for tk, sev in tier_keys:
+                lst = data.get(tk)
+                if isinstance(lst, list):
+                    counts[sev] += len(lst)
             continue
         rs = data.get("risk_summary") or {}
         for sev, items in rs.items():
@@ -161,7 +179,7 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
         risk_counts=risk_counts,
         module_labels=MODULE_LABELS,
         generated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        version=getattr(app_config, "VERSION", "1.4.1"),
+        version=getattr(app_config, "VERSION", "1.5.0"),
     )
 
     with open(output_path, "w", encoding="utf-8") as f:
