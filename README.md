@@ -115,11 +115,11 @@ sudo apt install nmap
 
 ### Optional external tools
 
-| Ferramenta | Para que serve | Instalação |
-|------------|---------------|------------|
-| `subfinder` | Enumeração profunda de subdomínios via OSINT passivo | `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest` |
-| `hashcat` | Hash cracking com GPU | `sudo apt install hashcat` |
-| `gau` | Mais fontes de URLs históricas | `go install github.com/lc/gau/v2/cmd/gau@latest` |
+| Tool | Purpose | Install |
+|------|---------|---------|
+| `subfinder` | Deep passive subdomain enumeration (OSINT) | `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest` |
+| `hashcat` | GPU-assisted hash cracking | `sudo apt install hashcat` |
+| `gau` | Extra historical URL sources | `go install github.com/lc/gau/v2/cmd/gau@latest` |
 
 ### 5. (Optional) CVE lookup
 
