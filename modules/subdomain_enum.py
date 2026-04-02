@@ -36,6 +36,7 @@ from rich.text import Text
 from config import (
     DEFAULT_THREADS,
     DEFAULT_TIMEOUT,
+    MAX_SUBDOMAINS,
     WORDLIST_SUBDOMAINS,
     count_lines,
 )
@@ -612,6 +613,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     recent_hits: deque[str] = deque(maxlen=14)
     window: deque[float] = deque()
     interrupted = False
+    subdomain_limit_hit = False
 
     def record_completion() -> None:
         nonlocal done_count
@@ -632,8 +634,12 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         return dc, fr, elapsed, rps, recent
 
     def on_hit(row: dict[str, Any]) -> None:
-        line = _format_hit_line(row)
+        nonlocal subdomain_limit_hit
         with lock:
+            if MAX_SUBDOMAINS > 0 and len(found_raw) >= MAX_SUBDOMAINS:
+                subdomain_limit_hit = True
+                return
+            line = _format_hit_line(row)
             found_raw.append(row)
             recent_hits.append(line)
 
@@ -749,6 +755,20 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     finally:
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+
+    if subdomain_limit_hit:
+        base["warnings"].append(
+            f"Subdomain enum limited to {MAX_SUBDOMAINS:,} results — "
+            "increase MAX_SUBDOMAINS in config.py"
+        )
+        console.print()
+        console.print(
+            Text(
+                f" [!] Subdomain limit reached ({MAX_SUBDOMAINS:,}) — "
+                "increase MAX_SUBDOMAINS in config.py",
+                style=C_WARN,
+            )
+        )
 
     duration = time.perf_counter() - t_start
     avg_rps = done_count / duration if duration > 0 else 0.0

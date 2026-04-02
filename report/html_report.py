@@ -16,6 +16,7 @@ from markupsafe import Markup, escape
 import config as app_config
 
 from utils.redact import redact_dict
+from utils.report_truncate import truncate_report_results
 
 # Pretty names for raw module keys in session.modules_run
 MODULE_LABELS: dict[str, str] = {
@@ -170,6 +171,9 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
 
     template = env.get_template("report.html.j2")
     redacted_session = redact_dict(copy.deepcopy(session))
+    _res = redacted_session.get("results")
+    if isinstance(_res, dict):
+        redacted_session["results"] = truncate_report_results(_res)
     res = redacted_session.get("results") or {}
     if not isinstance(res, dict):
         res = {}

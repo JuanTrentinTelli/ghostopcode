@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+import config as app_config
+
 
 class ModuleStatus(Enum):
     SUCCESS = "success"
@@ -272,6 +274,33 @@ def _duration_from_legacy(base: dict[str, Any], wall_s: float | None) -> float:
     return 0.0
 
 
+def _cap_module_finding_tiers(module_dict: dict[str, Any]) -> None:
+    """Trim each severity list to MAX_FINDINGS_MODULE; extend warnings in place."""
+    m = int(getattr(app_config, "MAX_FINDINGS_MODULE", 0) or 0)
+    if m <= 0:
+        return
+    ws_raw = module_dict.get("warnings")
+    if not isinstance(ws_raw, list):
+        ws: list[str] = []
+        module_dict["warnings"] = ws
+    else:
+        ws = list(ws_raw)
+        module_dict["warnings"] = ws
+    for field in (
+        "critical_findings",
+        "high_findings",
+        "medium_findings",
+        "low_findings",
+    ):
+        lst = module_dict.get(field)
+        if not isinstance(lst, list) or len(lst) <= m:
+            continue
+        module_dict[field] = lst[:m]
+        ws.append(
+            f"{field} capped at {m:,} (MAX_FINDINGS_MODULE in config.py)"
+        )
+
+
 def pack_session_result(
     legacy: dict[str, Any],
     wall_duration_s: float | None = None,
@@ -287,7 +316,9 @@ def pack_session_result(
       max(tier list, ``findings_flat`` counts) so SESSION COMPLETE matches module totals.
     """
     if legacy.get("_ghostopcode_module_contract_v1"):
-        return legacy
+        out = dict(legacy)
+        _cap_module_finding_tiers(out)
+        return out
 
     base = dict(legacy)
     mod = str(base.get("module") or "unknown")
@@ -317,7 +348,9 @@ def pack_session_result(
         warnings=warns,
         data=data,
     )
-    return mr.to_dict()
+    packed = mr.to_dict()
+    _cap_module_finding_tiers(packed)
+    return packed
 
 
 def module_error_dict(module_key: str, target_value: str, message: str) -> dict[str, Any]:

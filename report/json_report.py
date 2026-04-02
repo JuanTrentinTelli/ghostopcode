@@ -14,6 +14,7 @@ from typing import Any
 import config as app_config
 
 from utils.redact import redact_dict
+from utils.report_truncate import truncate_report_results
 
 
 def _default_handler(obj: Any) -> Any:
@@ -47,6 +48,9 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
     output_path = out / "report.json"
 
     redacted_session = redact_dict(copy.deepcopy(session))
+    _res = redacted_session.get("results")
+    if isinstance(_res, dict):
+        redacted_session["results"] = truncate_report_results(_res)
     report = {
         "ghostopcode": {
             "version": getattr(app_config, "VERSION", "1.6.0"),

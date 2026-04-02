@@ -20,7 +20,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from config import DEFAULT_THREADS, DEFAULT_TIMEOUT, USER_AGENT
+from config import (
+    DEFAULT_THREADS,
+    DEFAULT_TIMEOUT,
+    MAX_URLS_JS_RECON,
+    USER_AGENT,
+)
 from utils.http_client import get as http_get, head as http_head, resolve_base_url as http_resolve_base_url
 from utils.output import display_findings
 from utils.target_parser import Target
@@ -964,6 +969,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             return {"row": row, "eps": eps, "secs": secs, "sm": sm, "name": name}
 
         interrupted = False
+        js_ep_limited = False
         try:
             with ThreadPoolExecutor(max_workers=min(threads, 16)) as ex:
                 futs = {ex.submit(work, u): u for u in to_fetch}
@@ -977,8 +983,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     analyzed += 1 if pack["row"]["analyzed"] else 0
                     for ep in pack["eps"]:
                         k = ep["url"].lower()
-                        if k not in endpoints_map:
-                            endpoints_map[k] = ep
+                        if k in endpoints_map:
+                            continue
+                        if (
+                            MAX_URLS_JS_RECON > 0
+                            and len(endpoints_map) >= MAX_URLS_JS_RECON
+                        ):
+                            js_ep_limited = True
+                            break
+                        endpoints_map[k] = ep
+                    if js_ep_limited:
+                        break
                     for s in pack["secs"]:
                         all_secrets.append(s)
                     sm_pack = pack["sm"]
@@ -1016,6 +1031,20 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         except KeyboardInterrupt:
             interrupted = True
             errors.append("Interrupted — partial JS recon results")
+
+        if js_ep_limited:
+            base["warnings"].append(
+                f"JS endpoint limit reached ({MAX_URLS_JS_RECON:,}) — "
+                "increase MAX_URLS_JS_RECON in config.py"
+            )
+            console.print()
+            console.print(
+                Text(
+                    f" [!] JS endpoint limit reached ({MAX_URLS_JS_RECON:,}) — "
+                    "increase MAX_URLS_JS_RECON in config.py",
+                    style=C_WARN,
+                )
+            )
 
         endpoints_list = list(endpoints_map.values())
         base["js_files"] = sorted(js_file_rows, key=lambda x: x.get("url", ""))

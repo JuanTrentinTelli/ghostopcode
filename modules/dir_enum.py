@@ -33,6 +33,7 @@ from rich.text import Text
 from config import (
     DEFAULT_THREADS,
     DEFAULT_TIMEOUT,
+    MAX_URLS_DIR_ENUM,
     USER_AGENT,
     WORDLIST_DIRS,
     WORDLIST_DIRS_FAST,
@@ -1052,9 +1053,15 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     elif fn:
                         key = fn.get("path", "")
                         if key not in seen_paths:
-                            seen_paths.add(key)
-                            found_list.append(fn)
-                            recent_hits.append(_hit_line_str(fn))
+                            if (
+                                MAX_URLS_DIR_ENUM > 0
+                                and len(found_list) >= MAX_URLS_DIR_ENUM
+                            ):
+                                pass
+                            else:
+                                seen_paths.add(key)
+                                found_list.append(fn)
+                                recent_hits.append(_hit_line_str(fn))
 
             except httpx.TimeoutException:
                 k = "TimeoutException"
@@ -1193,6 +1200,20 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["stats"]["duration_s"] = round(duration, 2)
         base["stats"]["req_per_sec"] = round(rps, 1)
         base["status"] = "success"
+
+        if MAX_URLS_DIR_ENUM > 0 and len(found_list) >= MAX_URLS_DIR_ENUM:
+            base["warnings"].append(
+                f"Dir enum results limited to {MAX_URLS_DIR_ENUM:,} paths — "
+                "increase MAX_URLS_DIR_ENUM in config.py"
+            )
+            console.print()
+            console.print(
+                Text(
+                    f" [!] Dir enum hit path limit ({MAX_URLS_DIR_ENUM:,}) — "
+                    "increase MAX_URLS_DIR_ENUM in config.py",
+                    style=C_WARN,
+                )
+            )
 
         critical_paths = [f for f in found_list if f.get("risk") == "CRITICAL"]
         if quiet:

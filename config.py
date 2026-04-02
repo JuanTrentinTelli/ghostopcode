@@ -144,3 +144,14 @@ OUTPUT_DIR = "output"
 # ── Meta ────────────────────────────────────────────────────────────────────
 VERSION = "1.6.0"
 AUTHOR = "GhostOpcode"
+
+# ── Memory limits ─────────────────────────────────────────────────────────────
+# Maximum items to keep in memory per module run. Increase for large targets.
+# Set to 0 to disable that limit (advanced; risk of high RAM / huge reports).
+
+MAX_URLS_HARVESTER = 10_000  # url_harvester: merged URLs before dedup
+MAX_URLS_DIR_ENUM = 5_000  # dir_enum: distinct paths found (hits), not wordlist size
+MAX_URLS_JS_RECON = 2_000  # js_recon: unique endpoints kept
+MAX_SUBDOMAINS = 5_000  # subdomain_enum: resolved subdomains stored
+MAX_FINDINGS_MODULE = 1_000  # per severity tier after pack_session_result
+MAX_REPORT_FINDINGS = 10_000  # total tier findings across modules in JSON/HTML only

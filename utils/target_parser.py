@@ -11,6 +11,15 @@ _DOMAIN_RE = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
 )
 
+# Reject obvious path / URL traversal in operator-supplied targets (defense in depth).
+_TRAVERSAL_PATTERNS: tuple[str, ...] = (
+    "..",
+    "%2e%2e",
+    "%2f",
+    "..%2f",
+    "%2e%2e%2f",
+)
+
 # Module compatibility: which logical module keys apply per target type
 _DOMAIN_MODULES = frozenset(
     {
@@ -122,6 +131,13 @@ def parse_target(raw: str) -> Target:
     stripped = raw.strip()
     if not stripped:
         raise ValueError("Input cannot be empty")
+
+    raw_lower = stripped.lower()
+    for pattern in _TRAVERSAL_PATTERNS:
+        if pattern in raw_lower:
+            raise ValueError(
+                f"Invalid target: path traversal pattern detected ({pattern!r})"
+            )
 
     # CIDR (must contain / for network form we accept here)
     if "/" in stripped:

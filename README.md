@@ -42,10 +42,10 @@ CLI. **No command-line arguments required**; run it and follow the menu.
 
 | # | Module | What it does |
 |---|--------|--------------|
-| 1 | **DNS Recon** | Queries A, MX, NS, TXT, SOA, CAA, SRV; zone transfer (AXFR). Infers technologies from DNS. **New:** full SPF/DMARC/DKIM analysis with spoofing/phishing risk assessment (domain targets). |
+| 1 | **DNS Recon** | Registros A/MX/NS/TXT/SOA/CAA/SRV + zone transfer (AXFR). Detecta tecnologias via DNS. **SPF/DMARC/DKIM intelligence** com avaliação de risco de spoofing e phishing. |
 | 2 | **Subdomain Enum** | Discovers subdomains via wordlist bruteforce. Detects wildcard DNS and subdomain takeover candidates. |
 | 3 | **WHOIS + Fingerprint** | Domain/IP registration data. Detects web server, CMS, CDN, and backend hints from HTTP headers. Audits SSL certificates. |
-| 4 | **Port Scan** | TCP port sweep (any range). Accurate service identification via **nmap -sV**. Banner grabbing. OS inference. |
+| 4 | **Port scan** | TCP connect scan + nmap com **3 níveis de intensidade**: Standard (-sV), Enhanced (-sV -sC), Vuln scan (`--script vuln`, CONFIRM obrigatório). CVE lookup automático pós-scan. |
 | 5 | **Dir Enum** | Directory and file bruteforce (Fast / Normal / Full). HTTP catch-all detection. Risk-bucketed findings. |
 | 6 | **Harvester** | Crawls the site and pulls PDFs, DOCs, XLS. Extracts emails, names, LinkedIn profiles. Scans for exposed sensitive files (.env, .git, backups). Document metadata extraction. |
 | 7 | **HTTP Methods** | Probes dangerous HTTP methods (PUT, DELETE, TRACE). CORS misconfiguration detection. Security header audit. |
@@ -57,6 +57,21 @@ CLI. **No command-line arguments required**; run it and follow the menu.
 | 13 | **ARP Scan** | Finds live hosts on the LAN via ARP. Vendor identification from MAC. Requires a **CIDR** target and **root/sudo**. |
 | 14 | **Packet Sniffer** | Live traffic capture. Protocol parsing and passive intel. Requires **root/sudo**. |
 | ★ | **CVE Lookup** | Runs automatically after a port scan (when configured). Queries the **NVD** using discovered services and versions. Returns relevant CVEs with CVSS scores. |
+
+---
+
+## Segurança e qualidade
+
+| Feature | Descrição |
+|---------|-----------|
+| **Redação de segredos** | Credenciais mascaradas automaticamente em JSON/HTML/log. Terminal mostra valores completos. |
+| **TLS configurável** | Seleção por sessão: Strict (`verify=True`) ou Relaxed para alvos com certificados auto-assinados. |
+| **Log de operador** | Ações registradas sem expor inputs sensíveis (CONFIRM, hashes). |
+| **Lazy import** | Módulos carregados sob demanda — módulo quebrado não derruba o menu. |
+| **Cache NVD** | CVE lookup sem requests duplicadas na mesma sessão. |
+| **Cache DNS** | FQDNs resolvidos uma vez e compartilhados entre módulos. |
+| **Limites de memória** | `MAX_URLS_HARVESTER`, `MAX_URLS_DIR_ENUM`, etc. configuráveis em `config.py`. |
+| **Path traversal** | Slug de output sanitizado com `Path.resolve()` / contenção sob `OUTPUT_DIR`; inputs maliciosos rejeitados no parser. |
 
 ---
 
@@ -180,15 +195,21 @@ Select modules:
 [0] RUN ALL — runs every module available for the target
 ```
 
-## Output modes
+## Modos de output
 
-| Mode | Selection | Behavior |
-|------|-----------|----------|
-| **Normal** | `[1]` (default) | Full terminal output |
-| **Quiet** | `[2]` | Shows only **CRITICAL** and **HIGH** severity lines; progress and module summaries stay visible |
-| **Debug** | `[3]` | Normal output plus subprocess, HTTP, and DNS trace logging (secrets masked) |
+| Modo | Comportamento |
+|------|---------------|
+| **Normal** | Output completo no terminal (padrão) |
+| **Quiet** | Mostra apenas CRITICAL e HIGH |
+| **Debug** | Normal + subprocess calls + HTTP/API traces com timestamps |
 
-Output mode is chosen interactively in the session options menu. **JSON and HTML reports are always written complete**, regardless of mode.
+Modo escolhido no menu de opções da sessão. **Relatórios JSON/HTML são sempre escritos completos** (com redação de segredos), independentemente do modo.
+
+| Modo | Atalho no menu |
+|------|----------------|
+| Normal | `[1]` (padrão) |
+| Quiet | `[2]` |
+| Debug | `[3]` |
 
 ### Runtime options
 
@@ -245,19 +266,49 @@ Safe hosts for practice (no special permission needed):
 
 ---
 
+## Política de segurança de artefatos
+
+O GhostOpcode protege dados sensíveis coletados durante o recon:
+
+- **Terminal** → valores completos visíveis ao operador
+- **report.json** → valores mascarados (`mypa****`)
+- **report.html** → valores mascarados
+- **session.log** → ações registradas, não inputs literais
+
+Credenciais encontradas (senhas em URLs, API keys, tokens) são automaticamente mascaradas antes de qualquer persistência em disco. O relatório é mais seguro para compartilhar com o cliente.
+
+---
+
+## Limites configuráveis
+
+Editar `config.py` para ajustar limites de memória:
+
+```python
+MAX_URLS_HARVESTER   = 10_000   # url_harvester
+MAX_URLS_DIR_ENUM    = 5_000    # dir_enum
+MAX_URLS_JS_RECON    = 2_000    # js_recon
+MAX_SUBDOMAINS       = 5_000    # subdomain_enum
+MAX_FINDINGS_MODULE  = 1_000    # por severidade
+MAX_REPORT_FINDINGS  = 10_000   # relatório JSON/HTML
+```
+
+Definir como `0` para remover o limite (não recomendado em alvos grandes).
+
+---
+
 ## Changelog
 
-| Version | Changes |
-|---------|---------|
-| **v1.6.0** | Session-scoped **DNS cache** (`utils/dns_cache`) — shared hostname→IPv4 across subdomain_enum, subfinder_enum, port_scan; cleared each run · shared **HTTP client** (`utils/http_client`, httpx) with consistent **User-Agent** across HTTP modules · **`utils/redact`** for safer session logs and report JSON/HTML |
-| **v1.5.0** | SPF/DMARC/DKIM intelligence in DNS recon · quiet / debug output modes · `base_module` contract (`ModuleResult`, `make_finding`, `pack_session_result`) · SESSION COMPLETE severity uses aggregated `*_findings` · URL harvester `findings_flat` in reports · hash module auto-skipped on RUN ALL |
-| v1.4.1 | Passive subdomain engine: **subfinder** (replaces Amass; previous passive engine broken on current Kali Linux) |
-| v1.4.0 | WAF Detection · URL Harvester · passive subdomain enum · terminal verbosity |
-| v1.3.1 | Filter generic CVEs · logger hotfix |
-| v1.3.0 | **nmap -sV** integrated into port scan |
-| v1.2.0 | Automatic CVE lookup via NVD API |
-| v1.1.0 | Hotfixes: logger, wordlists, catch-all detection |
-| v1.0.0 | Initial release — 12 recon modules |
+| Versão | O que mudou |
+|--------|-------------|
+| **v1.6.0** | Segurança de artefatos (redact) · TLS configurável · lazy import · cache NVD/DNS · limites de memória · path traversal fix · SPF/DMARC/DKIM intelligence · nmap 3 níveis · SESSION COMPLETE correto · hash skip no RUN ALL · erros não silenciosos · log de operador |
+| **v1.5.0** | SPF/DMARC/DKIM parser · quiet mode · debug mode · refactor base_module · session summary fix · hash module skip no RUN ALL |
+| v1.4.1 | Substituído AMASS por subfinder |
+| v1.4.0 | WAF Detection · URL Harvester · Subfinder enum · terminal verbosity |
+| v1.3.1 | Filtro CVEs genéricos · hotfix logger |
+| v1.3.0 | nmap -sV integrado no port scan |
+| v1.2.0 | CVE lookup automático com NVD API |
+| v1.1.0 | Hotfixes: logger, wordlists, catchall detection |
+| v1.0.0 | Lançamento inicial — 12 módulos de recon |
 
 ---
 

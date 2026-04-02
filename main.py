@@ -7,6 +7,7 @@ Step 1: structure, terminal UX, and module routing stubs.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import importlib
 import os
 import re
@@ -260,20 +261,71 @@ def _panel_header(title: str, subtitle: str | None = None) -> Panel:
     )
 
 
-def _slug_output_name(target: Target) -> str:
-    """Filesystem-safe slug for session output directory."""
-    s = target.value.replace("/", "_").replace(":", "_")
-    return re.sub(r"[^\w.\-]+", "_", s, flags=re.ASCII)[:120] or "session"
+def _path_is_under_output_base(output_base: Path, candidate: Path) -> bool:
+    """True if resolved candidate is output_base or a descendant (no traversal)."""
+    try:
+        candidate.relative_to(output_base)
+        return True
+    except ValueError:
+        return False
+
+
+def _slug_output_name(target_value: str) -> str:
+    """
+    Convert target value to a safe single path segment for session output.
+
+    Security: strips traversal-like sequences, normalizes risky characters, then
+    verifies (output_base / slug).resolve() stays under OUTPUT_DIR; otherwise
+    falls back to a short hash-based name.
+    """
+    if not target_value or not str(target_value).strip():
+        return "unknown_target"
+
+    slug = str(target_value).strip()
+    while ".." in slug:
+        slug = slug.replace("..", "")
+    slug = re.sub(
+        r'[/\\:*?"<>|@!#$%^&()+=\[\]{};,\s]',
+        "_",
+        slug,
+    )
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    if not slug:
+        slug = "unknown_target"
+    if len(slug) > 100:
+        slug = slug[:100].rstrip("_")
+
+    output_base = Path(app_config.OUTPUT_DIR).resolve()
+    candidate = (output_base / slug).resolve()
+    if not _path_is_under_output_base(output_base, candidate):
+        digest = hashlib.md5(
+            str(target_value).encode("utf-8", errors="replace")
+        ).hexdigest()[:8]
+        slug = f"target_{digest}"
+
+    return slug
 
 
 def _make_session_output_dir(target: Target) -> str:
-    """Create output/<slug>_<timestamp>/ and files/ subfolder for the session."""
+    """Create OUTPUT_DIR/<slug>_<timestamp>/ and files/ subfolder for the session."""
     stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    slug = _slug_output_name(target)
-    rel = os.path.join(app_config.OUTPUT_DIR, f"{slug}_{stamp}")
-    Path(rel).mkdir(parents=True, exist_ok=True)
-    Path(os.path.join(rel, "files")).mkdir(exist_ok=True)
-    return rel
+    slug = _slug_output_name(target.value)
+    output_base = Path(app_config.OUTPUT_DIR).resolve()
+    output_dir = output_base / f"{slug}_{stamp}"
+    resolved = output_dir.resolve()
+    if not _path_is_under_output_base(output_base, resolved):
+        digest = hashlib.md5(
+            target.value.encode("utf-8", errors="replace")
+        ).hexdigest()[:8]
+        output_dir = output_base / f"target_{digest}_{stamp}"
+        resolved = output_dir.resolve()
+        if not _path_is_under_output_base(output_base, resolved):
+            output_dir = output_base / f"target_{digest}_{stamp}"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    files_dir = output_dir / "files"
+    files_dir.mkdir(exist_ok=True)
+    return str(output_dir.resolve())
 
 
 def _format_duration(seconds: float) -> str:
@@ -906,6 +958,46 @@ def _mission_summary(
     if "depth" in cfg:
         lines.append(
             f"Harvester: depth {cfg['depth']}, save_files={'yes' if cfg.get('save_files', True) else 'no'}"
+        )
+    if any(k == "url_harvester" for _, k, _ in modules):
+        uh = int(getattr(app_config, "MAX_URLS_HARVESTER", 0) or 0)
+        lines.append(
+            "URL limit   : "
+            + (
+                "unlimited (MAX_URLS_HARVESTER=0)"
+                if uh == 0
+                else f"{uh:,} URLs (MAX_URLS_HARVESTER)"
+            )
+        )
+    if any(k == "dir_enum" for _, k, _ in modules):
+        de = int(getattr(app_config, "MAX_URLS_DIR_ENUM", 0) or 0)
+        lines.append(
+            "Dir limit   : "
+            + (
+                "unlimited (MAX_URLS_DIR_ENUM=0)"
+                if de == 0
+                else f"{de:,} paths found (MAX_URLS_DIR_ENUM)"
+            )
+        )
+    if any(k == "subdomain_enum" for _, k, _ in modules):
+        ms = int(getattr(app_config, "MAX_SUBDOMAINS", 0) or 0)
+        lines.append(
+            "Sub limit   : "
+            + (
+                "unlimited (MAX_SUBDOMAINS=0)"
+                if ms == 0
+                else f"{ms:,} subdomains (MAX_SUBDOMAINS)"
+            )
+        )
+    if any(k == "js_recon" for _, k, _ in modules):
+        jr = int(getattr(app_config, "MAX_URLS_JS_RECON", 0) or 0)
+        lines.append(
+            "JS ep limit : "
+            + (
+                "unlimited (MAX_URLS_JS_RECON=0)"
+                if jr == 0
+                else f"{jr:,} endpoints (MAX_URLS_JS_RECON)"
+            )
         )
     lines.append("Export   : json · html · log (automatic)")
     if any(k in ("ports", "whois") for _, k, _ in modules):

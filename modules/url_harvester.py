@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from config import DEFAULT_TIMEOUT
+from config import DEFAULT_TIMEOUT, MAX_URLS_HARVESTER
 from utils.http_client import get as http_get
 from utils.output import debug_log, detect_sensitive_in_url, display_findings
 from utils.target_parser import Target
@@ -32,9 +32,6 @@ C_MUTED = "#4A5A62"
 C_PANEL = "#8B9CA8"
 
 console = Console(highlight=False, force_terminal=True)
-
-# Hard cap on merged URL list before deduplication (operator machine safety)
-MAX_URLS_TOTAL = 10_000
 
 # GF-style patterns as data (no scattered regex strings)
 GF_PATTERNS: dict[str, dict[str, Any]] = {
@@ -575,7 +572,7 @@ def filter_urls(urls: list[str]) -> dict[str, list[str]]:
 
 
 def _merge_and_cap(parts: list[list[str]], max_total: int) -> list[str]:
-    """Merge URL lists preserving first-seen order, dedupe by string, cap to max_total."""
+    """Merge URL lists preserving first-seen order, dedupe by string. max_total <= 0 = no cap."""
     seen: set[str] = set()
     merged: list[str] = []
     for part in parts:
@@ -583,7 +580,7 @@ def _merge_and_cap(parts: list[list[str]], max_total: int) -> list[str]:
             if u not in seen:
                 seen.add(u)
                 merged.append(u)
-                if len(merged) >= max_total:
+                if max_total > 0 and len(merged) >= max_total:
                     return merged
     return merged
 
@@ -635,6 +632,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "errors": errors,
         "risk_summary": {},
         "warnings": warnings,
+        "urls_limited": False,
     }
 
     domain = target.value.lower().strip()
@@ -704,10 +702,33 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     )
 
     raw_pull_total = len(wb) + len(cc) + len(otx) + len(gau_urls)
-    merged = _merge_and_cap([wb, cc, otx, gau_urls], MAX_URLS_TOTAL)
+    cap = int(MAX_URLS_HARVESTER)
+    merged = _merge_and_cap([wb, cc, otx, gau_urls], cap)
+    urls_limited = cap > 0 and len(merged) >= cap
+    base["urls_limited"] = urls_limited
     base["total_urls"] = len(merged)
     unique = deduplicate_urls(merged, warnings)
     base["unique_urls"] = len(unique)
+
+    if urls_limited:
+        msg = (
+            f"URL limit reached ({cap:,}) — increase MAX_URLS_HARVESTER in config.py "
+            "for full coverage"
+        )
+        warnings.append(msg)
+        console.print()
+        console.print(
+            Text.assemble(
+                ("\n [!] URL limit reached: ", C_WARN),
+                (f"{cap:,} URLs — stopping merge", f"bold {C_WARN}"),
+            )
+        )
+        console.print(
+            Text(
+                "     Increase MAX_URLS_HARVESTER in config.py for full coverage",
+                style=C_MUTED,
+            )
+        )
 
     console.print(Text(f"       {'─' * 36}", style=C_MUTED))
     console.print(
@@ -718,11 +739,6 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             (f"{len(unique)} unique after dedup", C_DIM),
         )
     )
-
-    if len(merged) >= MAX_URLS_TOTAL:
-        errors.append(
-            f"URL list capped at {MAX_URLS_TOTAL} (merged); increase cap in module if needed"
-        )
 
     findings = filter_urls(unique)
     base["findings"] = findings
@@ -827,12 +843,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             style=C_DIM,
         )
     )
-    console.print(
-        Text(
-            f"     Collected : {len(merged)} URLs → {len(unique)} unique",
-            style=C_DIM,
+    coll_line = f"     Collected : {len(merged)} URLs → {len(unique)} unique"
+    if urls_limited:
+        coll_line += " (limit reached)"
+    console.print(Text(coll_line, style=C_DIM))
+    if urls_limited:
+        console.print(
+            Text(
+                "     [i] Warning: URL limit reached — increase MAX_URLS_HARVESTER",
+                style=C_WARN,
+            )
         )
-    )
     console.print(
         Text(
             f"     Critical  : {crit}  ·  High: {high}  ·  Medium: {med}",
