@@ -14,12 +14,12 @@
   ██████  ██       ██████  ██████  ██████  ███████
 ```
 
-**v1.5.0 · by GhostOpcode · Python Recon Framework**
+**v1.6.0 · by GhostOpcode · Python Recon Framework**
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Kali-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.5.0-orange?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.6.0-orange?style=flat-square)
 
 > Offensive reconnaissance framework — 100% local, no external APIs (optional CVE lookup via NVD only)
 
@@ -249,6 +249,7 @@ Safe hosts for practice (no special permission needed):
 
 | Version | Changes |
 |---------|---------|
+| **v1.6.0** | Session-scoped **DNS cache** (`utils/dns_cache`) — shared hostname→IPv4 across subdomain_enum, subfinder_enum, port_scan; cleared each run · shared **HTTP client** (`utils/http_client`, httpx) with consistent **User-Agent** across HTTP modules · **`utils/redact`** for safer session logs and report JSON/HTML |
 | **v1.5.0** | SPF/DMARC/DKIM intelligence in DNS recon · quiet / debug output modes · `base_module` contract (`ModuleResult`, `make_finding`, `pack_session_result`) · SESSION COMPLETE severity uses aggregated `*_findings` · URL harvester `findings_flat` in reports · hash module auto-skipped on RUN ALL |
 | v1.4.1 | Passive subdomain engine: **subfinder** (replaces Amass; previous passive engine broken on current Kali Linux) |
 | v1.4.0 | WAF Detection · URL Harvester · passive subdomain enum · terminal verbosity |
@@ -274,6 +275,6 @@ Safe hosts for practice (no special permission needed):
 
 ## Author
 
-**GhostOpcode** · v1.5.0 · Python Recon Framework
+**GhostOpcode** · v1.6.0 · Python Recon Framework
 
 [![GitHub](https://img.shields.io/badge/GitHub-JuanTrentinTelli-black?style=flat-square&logo=github)](https://github.com/JuanTrentinTelli/ghostopcode)

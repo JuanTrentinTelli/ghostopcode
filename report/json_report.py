@@ -49,7 +49,7 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
     redacted_session = redact_dict(copy.deepcopy(session))
     report = {
         "ghostopcode": {
-            "version": getattr(app_config, "VERSION", "1.5.0"),
+            "version": getattr(app_config, "VERSION", "1.6.0"),
             "generated": datetime.now().isoformat(timespec="seconds"),
             "report_type": "recon_session",
         },
