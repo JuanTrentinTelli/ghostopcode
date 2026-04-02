@@ -282,6 +282,9 @@ def pack_session_result(
     - Preserves all legacy keys at the top level (for HTML/Jinja).
     - Adds ``critical_findings`` … ``low_findings``, ``total_findings``, ``has_critical``.
     - ``errors`` / ``warnings`` are always lists.
+    - ``findings_flat`` (if present) is kept verbatim; ``derive_finding_tiers`` may
+      dedupe rows when building tier lists — ``main.calculate_session_summary`` uses
+      max(tier list, ``findings_flat`` counts) so SESSION COMPLETE matches module totals.
     """
     if legacy.get("_ghostopcode_module_contract_v1"):
         return legacy

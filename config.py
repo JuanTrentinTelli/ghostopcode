@@ -133,9 +133,10 @@ COMMON_PORTS = [
 ]
 
 # ── User-Agent ────────────────────────────────────────────────────────────────
-USER_AGENT = (
+DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
 )
+USER_AGENT = DEFAULT_USER_AGENT
 
 # ── Output ──────────────────────────────────────────────────────────────────
 OUTPUT_DIR = "output"

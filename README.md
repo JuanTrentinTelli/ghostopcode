@@ -74,6 +74,29 @@ output/
 
 ---
 
+## Session log policy
+
+The `session.log` file records module activity for audit and troubleshooting.
+
+**What is logged**
+
+- Module start/end with timestamps (via stdout mirror and explicit lines)
+- Findings (sensitive values masked per the redact policy)
+- Errors and warnings
+- Operator actions (what was decided, not raw typed secrets)
+
+**What is not logged as literal input**
+
+- Raw confirmation tokens for high-risk flows (e.g. vuln scan authorization)
+- Raw password-hash strings submitted in the hash module
+- Values that match conservative sensitive-input patterns echoed on the TTY
+
+**Sharing logs**
+
+Session logs are intended to be safer to share for diagnostics: sensitive operator input and common secret-shaped strings are redacted before or instead of being written in identifiable form. Reports (`report.json` / `report.html`) use a separate redaction pass.
+
+---
+
 ## Requirements
 
 - **Python 3.10+**

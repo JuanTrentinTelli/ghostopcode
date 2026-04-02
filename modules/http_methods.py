@@ -4,12 +4,12 @@ GhostOpcode HTTP methods probe — OPTIONS, dangerous verbs, XST/WebDAV, headers
 
 from __future__ import annotations
 
+import contextvars
 import random
 import re
 import secrets
 import string
 import time
-import urllib3
 from typing import Any
 from urllib.parse import urlparse, urljoin
 
@@ -21,9 +21,24 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_TIMEOUT, USER_AGENT
+from utils.http_client import make_session, session_request, resolve_base_url as http_resolve_base_url
 from utils.target_parser import Target
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+_HTTP_CTX: contextvars.ContextVar[
+    tuple[requests.Session, dict[str, Any], list[str]] | None
+] = contextvars.ContextVar("ghostopcode_http_methods_ctx", default=None)
+
+
+def _http_tls() -> tuple[requests.Session, dict[str, Any], list[str]]:
+    v = _HTTP_CTX.get()
+    if v is None:
+        raise RuntimeError("HTTP methods TLS context not set")
+    return v
+
+
+def _hr(method: str, url: str, **kwargs: Any) -> requests.Response | None:
+    session, config, ssl_w = _http_tls()
+    return session_request(session, method, url, config, ssl_warnings=ssl_w, **kwargs)
 
 C_PRI = "#00FF41"
 C_DIM = "#6F7F86"
@@ -129,34 +144,16 @@ def _session_headers() -> dict[str, str]:
     return {"User-Agent": USER_AGENT}
 
 
-def resolve_base_url(target: Target, timeout: float) -> str | None:
-    """Pick working https or http origin for target host."""
-    host = target.value
-    for scheme in ("https", "http"):
-        base = f"{scheme}://{host}".rstrip("/")
-        root = base + "/"
-        try:
-            r = requests.get(
-                root,
-                timeout=timeout,
-                verify=False,
-                allow_redirects=True,
-                headers=_session_headers(),
-            )
-            if 0 < r.status_code < 600:
-                u = urlparse(r.url)
-                return u._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
 def _join_url(base: str, path: str) -> str:
     path = path if path.startswith("/") else "/" + path
     return urljoin(base.rstrip("/") + "/", path.lstrip("/"))
 
 
-def detect_endpoint_catchall(url: str, timeout: float) -> dict[str, Any]:
+def detect_endpoint_catchall(
+    url: str,
+    timeout: float,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Detect catchall routing: invented HTTP methods should not all return 200.
     Fully dynamic — no framework-specific strings.
@@ -169,16 +166,24 @@ def detect_endpoint_catchall(url: str, timeout: float) -> dict[str, Any]:
     responses: list[dict[str, Any]] = []
     for method in fake_methods:
         try:
-            resp = requests.request(
-                method=method,
-                url=url,
+            resp = _hr(
+                method,
+                url,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=False,
                 headers=_session_headers(),
             )
-            responses.append({"method": method, "status": resp.status_code})
-        except Exception:  # noqa: BLE001
+            responses.append(
+                {
+                    "method": method,
+                    "status": resp.status_code if resp is not None else None,
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            if warnings is not None and len(warnings) < 12:
+                warnings.append(
+                    f"catchall fake-method probe ({method}): {type(e).__name__}: {e}"
+                )
             responses.append({"method": method, "status": None})
 
     valid_responses = [r for r in responses if r.get("status") is not None]
@@ -247,13 +252,16 @@ def probe_options(url: str, timeout: float) -> dict[str, Any]:
         "error": None,
     }
     try:
-        r = requests.options(
+        r = _hr(
+            "OPTIONS",
             url,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
         )
+        if r is None:
+            out["error"] = "ssl_or_unreachable"
+            return out
         out["status"] = r.status_code
         al = r.headers.get("Allow") or r.headers.get("allow")
         out["raw_allow"] = al
@@ -274,47 +282,60 @@ def probe_options(url: str, timeout: float) -> dict[str, Any]:
     return out
 
 
-def endpoint_reachable(url: str, timeout: float) -> tuple[bool, int | None]:
+def endpoint_reachable(
+    url: str,
+    timeout: float,
+    warnings: list[str] | None = None,
+) -> tuple[bool, int | None]:
     """True if path does not look like a hard 404 (still probe methods if unsure)."""
     try:
-        r = requests.head(
+        r = _hr(
+            "HEAD",
             url,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
         )
+        if r is None:
+            return True, None
         code = r.status_code
         if code == 405:
-            g = requests.get(
+            g = _hr(
+                "GET",
                 url,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(),
                 stream=True,
             )
             try:
-                code = g.status_code
+                code = g.status_code if g is not None else None
             finally:
-                g.close()
+                if g is not None:
+                    g.close()
         return code != 404, code
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         try:
-            r = requests.get(
+            r = _hr(
+                "GET",
                 url,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(),
                 stream=True,
             )
             try:
-                c = r.status_code
+                c = r.status_code if r is not None else None
                 return c != 404, c
             finally:
-                r.close()
-        except Exception:  # noqa: BLE001
+                if r is not None:
+                    r.close()
+        except Exception as e2:  # noqa: BLE001
+            if warnings is not None:
+                warnings.append(
+                    f"endpoint_reachable ({url[:72]}…): HEAD {type(e).__name__}: {e}; "
+                    f"GET {type(e2).__name__}: {e2}"
+                )
             return True, None
 
 
@@ -333,17 +354,21 @@ def test_put(url_base: str, endpoint_path: str, timeout: float, rid: str) -> dic
         "error": None,
     }
     try:
-        r = requests.put(
+        r = _hr(
+            "PUT",
             test_url,
             data=b"ghostopcode safe probe - remove if seen",
             timeout=timeout,
-            verify=False,
             allow_redirects=False,
             headers={
                 **_session_headers(),
                 "Content-Type": "text/plain",
             },
         )
+        if r is None:
+            result["error"] = "ssl_or_unreachable"
+            result["note"] = "ssl_or_unreachable"
+            return result
         result["status"] = r.status_code
         c = r.status_code
         if c == 201:
@@ -408,13 +433,17 @@ def test_delete(url_base: str, endpoint_path: str, timeout: float, rid: str) -> 
         "error": None,
     }
     try:
-        r = requests.delete(
+        r = _hr(
+            "DELETE",
             test_url,
             timeout=timeout,
-            verify=False,
             allow_redirects=False,
             headers=_session_headers(),
         )
+        if r is None:
+            result["error"] = "ssl_or_unreachable"
+            result["note"] = "ssl_or_unreachable"
+            return result
         result["status"] = r.status_code
         c = r.status_code
         if c == 404:
@@ -472,14 +501,17 @@ def test_trace_like(
         "error": None,
     }
     try:
-        r = requests.request(
+        r = _hr(
             method,
             url,
             timeout=timeout,
-            verify=False,
             allow_redirects=False,
             headers={**_session_headers(), XST_HEADER: XST_VALUE},
         )
+        if r is None:
+            result["error"] = "ssl_or_unreachable"
+            result["note"] = "ssl_or_unreachable"
+            return result
         result["status"] = r.status_code
         body = (r.text or "")[:8000]
         if r.status_code == 200 and XST_HEADER in body and XST_VALUE in body:
@@ -524,12 +556,11 @@ def test_propfind(url: str, timeout: float) -> dict[str, Any]:
         "error": None,
     }
     try:
-        r = requests.request(
+        r = _hr(
             "PROPFIND",
             url,
             data=PROPFIND_BODY,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers={
                 **_session_headers(),
@@ -537,6 +568,10 @@ def test_propfind(url: str, timeout: float) -> dict[str, Any]:
                 "Depth": "1",
             },
         )
+        if r is None:
+            result["error"] = "ssl_or_unreachable"
+            result["note"] = "ssl_or_unreachable"
+            return result
         result["status"] = r.status_code
         if r.status_code == 207:
             result["enabled"] = True
@@ -578,7 +613,6 @@ def test_generic_method(url: str, method: str, timeout: float, risk_hint: str) -
     try:
         kwargs: dict[str, Any] = {
             "timeout": timeout,
-            "verify": False,
             "allow_redirects": True,
             "headers": _session_headers(),
         }
@@ -587,7 +621,11 @@ def test_generic_method(url: str, method: str, timeout: float, risk_hint: str) -
         elif method == "PATCH":
             kwargs["data"] = b"{}"
             kwargs["headers"] = {**_session_headers(), "Content-Type": "application/json"}
-        r = requests.request(method, url, **kwargs)
+        r = _hr(method, url, **kwargs)
+        if r is None:
+            result["error"] = "ssl_or_unreachable"
+            result["note"] = "ssl_or_unreachable"
+            return result
         result["status"] = r.status_code
         c = r.status_code
         webdavish = method in (
@@ -694,7 +732,11 @@ def audit_security_headers(response: requests.Response | None) -> dict[str, Any]
     return {"present": present, "missing": missing, "exposed": exposed}
 
 
-def test_cors(base_url: str, timeout: float) -> dict[str, Any]:
+def test_cors(
+    base_url: str,
+    timeout: float,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Probe CORS with synthetic Origin values (read-only, no credential exfil).
     """
@@ -715,35 +757,39 @@ def test_cors(base_url: str, timeout: float) -> dict[str, Any]:
         bypass = f"https://{host}.evil-ghostopcode.example"
         tests.append((bypass, "subdomain_bypass"))
     try:
-        r0 = requests.get(
+        r0 = _hr(
+            "GET",
             root,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
         )
-        acao = (
-            r0.headers.get("Access-Control-Allow-Origin")
-            or r0.headers.get("access-control-allow-origin")
-        )
-        if acao == "*":
-            out["misconfigured"] = True
-            out["type"] = "wildcard"
-            out["risk"] = "HIGH"
-            out["details"] = "Access-Control-Allow-Origin: *"
-            return out
-    except Exception:  # noqa: BLE001
-        pass
+        if r0 is not None:
+            acao0 = (
+                r0.headers.get("Access-Control-Allow-Origin")
+                or r0.headers.get("access-control-allow-origin")
+            )
+            if acao0 == "*":
+                out["misconfigured"] = True
+                out["type"] = "wildcard"
+                out["risk"] = "HIGH"
+                out["details"] = "Access-Control-Allow-Origin: *"
+                return out
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None:
+            warnings.append(f"CORS baseline GET: {type(e).__name__}: {e}")
 
     for origin, kind in tests:
         try:
-            r = requests.get(
+            r = _hr(
+                "GET",
                 root,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers={**_session_headers(), "Origin": origin},
             )
+            if r is None:
+                continue
             acao = (
                 r.headers.get("Access-Control-Allow-Origin")
                 or r.headers.get("access-control-allow-origin")
@@ -762,7 +808,11 @@ def test_cors(base_url: str, timeout: float) -> dict[str, Any]:
                 out["risk"] = "CRITICAL" if kind == "reflected" else "HIGH"
                 out["details"] = f"ACAO reflects untrusted Origin ({origin[:48]}…)"
                 return out
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            if warnings is not None and len(warnings) < 24:
+                warnings.append(
+                    f"CORS probe ({kind}): {type(e).__name__}: {e}"
+                )
             continue
     return out
 
@@ -900,6 +950,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         },
         "catchall_skipped": [],
         "errors": errors,
+        "warnings": [],
         "findings": [],
     }
 
@@ -915,8 +966,11 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         console.print(Text("  [SKIP] HTTP methods — domain or IP only.", style=C_WARN))
         return base
 
+    session = make_session(config)
+    ssl_w: list[str] = []
+    ctx_token = _HTTP_CTX.set((session, config, ssl_w))
     try:
-        resolved = resolve_base_url(target, timeout)
+        resolved = http_resolve_base_url(target, timeout, config, ssl_warnings=ssl_w)
         if not resolved:
             base["status"] = "error"
             base["error"] = "Host unreachable (HTTP/HTTPS)"
@@ -926,6 +980,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
         base["base_url"] = resolved
         quiet = bool(config.get("quiet", False))
+        http_warnings: list[str] = base["warnings"]
         console.print(
             Panel(
                 Text(f"  HTTP METHODS  ·  {resolved}", style=f"bold {C_PRI}"),
@@ -938,7 +993,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         active_endpoints: list[str] = []
         for ep in TEST_ENDPOINTS:
             u = _join_url(resolved, ep)
-            ok, code = endpoint_reachable(u, timeout)
+            ok, code = endpoint_reachable(u, timeout, http_warnings)
             if ok or ep == "/":
                 active_endpoints.append(ep)
             elif verbose:
@@ -949,10 +1004,10 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
         baseline_resp: requests.Response | None = None
         try:
-            baseline_resp = requests.get(
+            baseline_resp = _hr(
+                "GET",
                 _join_url(resolved, "/"),
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(),
             )
@@ -962,7 +1017,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         sec = audit_security_headers(baseline_resp)
         base["security_headers"] = sec
 
-        cors = test_cors(resolved, timeout)
+        cors = test_cors(resolved, timeout, http_warnings)
         base["cors"] = cors
 
         methods_out: dict[str, Any] = {}
@@ -974,7 +1029,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         for ep in active_endpoints:
             probe_url = _join_url(resolved, ep)
             if ep != "/":
-                cinfo = detect_endpoint_catchall(probe_url, timeout)
+                cinfo = detect_endpoint_catchall(
+                    probe_url, timeout, http_warnings
+                )
                 if cinfo.get("is_catchall"):
                     catchall_skipped.append({"endpoint": ep, **cinfo})
                     cs = cinfo.get("catch_status")
@@ -1142,5 +1199,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["error"] = str(e)
         errors.append(str(e))
         console.print(Text(f"  [✗] {e}", style=C_ERR))
+    finally:
+        _HTTP_CTX.reset(ctx_token)
+        errors.extend(ssl_w)
 
     return base

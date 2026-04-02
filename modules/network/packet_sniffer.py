@@ -28,6 +28,20 @@ C_ACCENT = "#8B9CA8"
 _MAX_RAW_PREVIEW = 120
 
 
+def _pkt_warn(
+    warnings: list[str] | None,
+    once: set[str] | None,
+    key: str,
+    msg: str,
+) -> None:
+    if warnings is None or once is None:
+        return
+    if key in once:
+        return
+    once.add(key)
+    warnings.append(msg)
+
+
 def _is_root() -> bool:
     ge = getattr(os, "geteuid", None)
     if callable(ge):
@@ -62,7 +76,11 @@ def build_filter(target: Target) -> str:
     return ""
 
 
-def analyze_packet(packet: Any) -> list[dict[str, Any]]:
+def analyze_packet(
+    packet: Any,
+    warnings: list[str] | None = None,
+    warn_once: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     Analyze a captured packet and extract intelligence events.
     Returns zero or more small dicts with type + display + finding keys.
@@ -92,8 +110,13 @@ def analyze_packet(packet: Any) -> list[dict[str, Any]]:
                             "risk": "LOW",
                         }
                     )
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                _pkt_warn(
+                    warnings,
+                    warn_once,
+                    f"dns_qname:{type(e).__name__}",
+                    f"packet DNS qname extract: {type(e).__name__}: {e}",
+                )
 
     if packet.haslayer(ARP):
         arp = packet[ARP]
@@ -110,8 +133,13 @@ def analyze_packet(packet: Any) -> list[dict[str, Any]]:
                             "risk": "LOW",
                         }
                     )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            _pkt_warn(
+                warnings,
+                warn_once,
+                f"arp_field:{type(e).__name__}",
+                f"packet ARP field read: {type(e).__name__}: {e}",
+            )
 
     if packet.haslayer(TCP) and packet.haslayer(Raw):
         ip_ly = packet[IP] if packet.haslayer(IP) else None
@@ -142,7 +170,13 @@ def analyze_packet(packet: Any) -> list[dict[str, Any]]:
                             host = line.split(":", 1)[1].strip()[:80]
                         if "authorization:" in low:
                             auth_hint = True
-                except Exception:  # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
+                    _pkt_warn(
+                        warnings,
+                        warn_once,
+                        f"http_decode:{type(e).__name__}",
+                        f"packet HTTP decode: {type(e).__name__}: {e}",
+                    )
                     text = ""
                 disp = f"[HTTP] {src} → {dst}  {head.splitlines()[0][:60] if head else 'HTTP'}"
                 if auth_hint:
@@ -163,7 +197,13 @@ def analyze_packet(packet: Any) -> list[dict[str, Any]]:
         if tcp.dport == 21 or tcp.sport == 21:
             try:
                 text = raw.decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _pkt_warn(
+                    warnings,
+                    warn_once,
+                    f"ftp_decode:{type(e).__name__}",
+                    f"packet FTP decode: {type(e).__name__}: {e}",
+                )
                 text = ""
             upper = text.upper()
             if "USER " in upper or "PASS " in upper:
@@ -246,6 +286,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "findings": findings,
         "stats": stats,
         "errors": errors,
+        "warnings": [],
     }
 
     if target.is_domain():
@@ -307,12 +348,20 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         return time.monotonic() >= deadline
 
     arp_printed: set[str] = set()
+    sniff_warnings: list[str] = base["warnings"]
+    pkt_warn_once: set[str] = set()
 
     def packet_handler(pkt: Any) -> None:
         stats["total_packets"] += 1
         try:
-            evs = analyze_packet(pkt)
-        except Exception:  # noqa: BLE001
+            evs = analyze_packet(pkt, sniff_warnings, pkt_warn_once)
+        except Exception as e:  # noqa: BLE001
+            _pkt_warn(
+                sniff_warnings,
+                pkt_warn_once,
+                f"analyze_packet:{type(e).__name__}",
+                f"analyze_packet: {type(e).__name__}: {e}",
+            )
             stats["other"] += 1
             return
         if not evs:

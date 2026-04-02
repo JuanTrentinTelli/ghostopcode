@@ -10,9 +10,9 @@ import datetime as _dt
 import importlib
 import os
 import re
+import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,9 @@ from rich.text import Text
 
 import config as app_config
 
+from modules.cve_lookup import _cache_clear
 from report import html_report, json_report
+from utils.dns_cache import clear as dns_cache_clear
 from utils.banner import show_banner
 from utils.base_module import (
     ModuleStatus,
@@ -117,6 +119,54 @@ _MODULE_IMPORTS: dict[str, str] = {
 }
 
 
+def _load_module(module_path: str, symbol: str) -> Any:
+    """
+    Lazy-load a module symbol at runtime.
+
+    Returns the requested symbol or None on failure so import errors in one
+    module do not crash the CLI at startup.
+
+    Args:
+        module_path: dotted module path (e.g. ``modules.port_scan``).
+        symbol: attribute name (e.g. ``run``, ``NMAP_LEVELS``).
+    """
+    try:
+        mod = importlib.import_module(module_path)
+        return getattr(mod, symbol, None)
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _describe_nmap_level_for_summary(level: int) -> str:
+    """Mission summary line for nmap level; falls back if port_scan cannot load."""
+    fn = _load_module("modules.port_scan", "describe_nmap_level_for_summary")
+    if callable(fn):
+        try:
+            return str(fn(int(level)))
+        except Exception:
+            pass
+    return {
+        1: "Standard (-sV only)",
+        2: "Enhanced (-sV -sC)",
+        3: "Vuln scan (--script vuln)",
+    }.get(int(level), str(level))
+
+
+def _nmap_level_display_name(level: int) -> str:
+    """Short name for result hints when NMAP_LEVELS is unavailable."""
+    levels = _load_module("modules.port_scan", "NMAP_LEVELS")
+    if isinstance(levels, dict):
+        try:
+            entry = levels.get(int(level), levels.get(1, {}))
+            if isinstance(entry, dict) and entry.get("name"):
+                return str(entry["name"])
+        except Exception:
+            pass
+    return {1: "Standard", 2: "Enhanced", 3: "Vuln"}.get(int(level), str(level))
+
+
 def run_module(name: str, target: Target, config: dict[str, Any]) -> dict[str, Any]:
     """
     Attempt to import and run a recon module.
@@ -127,14 +177,32 @@ def run_module(name: str, target: Target, config: dict[str, Any]) -> dict[str, A
     t0 = time.perf_counter()
     try:
         if name == "hash":
-            from modules.hash_module import run_hash
-
+            if config.get("run_all"):
+                return pack_session_result(
+                    {
+                        "module": "hash_module",
+                        "target": target.value,
+                        "status": ModuleStatus.SKIPPED.value,
+                        "warnings": [_HASH_SKIP_RUN_ALL_WARNING],
+                        "skip_reason": _HASH_SKIP_RUN_ALL_REASON,
+                    },
+                    wall_duration_s=time.perf_counter() - t0,
+                )
+            run_hash = _load_module("modules.hash_module", "run_hash")
+            if run_hash is None:
+                return module_error_dict(
+                    name, target.value, "Module failed to import"
+                )
             result = run_hash(str(config.get("hash_value") or ""), config)
         else:
             mod_path = _MODULE_IMPORTS.get(name)
             if mod_path:
-                mod = importlib.import_module(mod_path)
-                result = mod.run(target, config)
+                run_fn = _load_module(mod_path, "run")
+                if run_fn is None:
+                    return module_error_dict(
+                        name, target.value, "Module failed to import"
+                    )
+                result = run_fn(target, config)
             else:
                 result = {"status": "pending", "findings": [], "module": name}
         wall = time.perf_counter() - t0
@@ -282,35 +350,121 @@ def _render_module_menu(target: Target) -> None:
     console.print(Text("❯ ", style=f"bold {C_PRI}"), end="")
 
 
-# Interactive-only tools — excluded from [0] RUN ALL (non-interactive batch).
-_RUN_ALL_SKIP_KEYS: frozenset[str] = frozenset({"hash"})
+# Menu keys for modules that need interactive operator input — never part of [0] RUN ALL.
+SKIP_IN_RUN_ALL: frozenset[str] = frozenset({"hash"})
+
+_HASH_SKIP_RUN_ALL_WARNING = (
+    "Requires interactive input — select [9] individually when you have a hash to analyze."
+)
+_HASH_SKIP_RUN_ALL_REASON = "Requires interactive input — use [9] individually"
 
 
-def calculate_session_summary(session_results: dict[str, Any]) -> dict[str, int]:
+def _get_modules_for_run_all(target: Target) -> list[tuple[int, str, str]]:
     """
-    Aggregate severity counts for SESSION COMPLETE (and session JSON roll-up).
-
-    Uses normalized ``critical_findings`` / ``high_findings`` / … from each module
-    (populated by ``pack_session_result``). Only ``status == success`` rows count.
+    Ordered modules for RUN ALL ([0] alone): all supported rows minus SKIP_IN_RUN_ALL.
     """
-    totals: dict[str, int] = {
+    out: list[tuple[int, str, str]] = []
+    for mid, key, title, _ in _MODULE_ROWS:
+        if key in SKIP_IN_RUN_ALL:
+            continue
+        if target.supports(key):
+            out.append((mid, key, title))
+    return out
+
+
+def _safe_list_len(val: Any) -> int:
+    return len(val) if isinstance(val, list) else 0
+
+
+def _count_findings_flat_by_risk(flat: Any) -> tuple[int, int, int, int]:
+    """
+    Count rows in ``findings_flat`` by risk (matches module terminal roll-ups).
+    Non–CRITICAL/HIGH/MEDIUM rows roll into the LOW bucket.
+    """
+    c = h = m = lo = 0
+    if not isinstance(flat, list):
+        return (0, 0, 0, 0)
+    for item in flat:
+        if not isinstance(item, dict):
+            continue
+        r = str(item.get("risk") or item.get("severity") or "").strip().upper()
+        if r == "CRITICAL":
+            c += 1
+        elif r == "HIGH":
+            h += 1
+        elif r == "MEDIUM":
+            m += 1
+        else:
+            lo += 1
+    return (c, h, m, lo)
+
+
+def _module_tier_counts(result: dict[str, Any]) -> tuple[int, int, int, int]:
+    """
+    Per-module severity totals for SESSION COMPLETE.
+
+    Uses standard ``*_findings`` lists, but takes the per-tier maximum versus
+    ``findings_flat`` so dedup inside ``derive_finding_tiers`` cannot undercount
+    versus what modules already reported (e.g. URL harvester).
+    """
+    ct = _safe_list_len(result.get("critical_findings"))
+    ht = _safe_list_len(result.get("high_findings"))
+    mt = _safe_list_len(result.get("medium_findings"))
+    lt = _safe_list_len(result.get("low_findings"))
+    fc, fh, fm, fl = _count_findings_flat_by_risk(result.get("findings_flat"))
+    return (max(ct, fc), max(ht, fh), max(mt, fm), max(lt, fl))
+
+
+def calculate_session_summary(session_results: dict[str, Any]) -> dict[str, Any]:
+    """
+    Aggregate findings from all executed modules for SESSION COMPLETE and JSON.
+
+    Sums ``critical_findings`` / ``high_findings`` / … (ModuleResult contract).
+    Only ``status == success`` modules contribute finding counts. Unknown or empty
+    status is treated like error (no findings counted).
+
+    When ``findings_flat`` is present, per-tier counts use max(contract, flat) so
+    the session total never falls below the module's own flat roll-up.
+    """
+    totals: dict[str, Any] = {
         "CRITICAL": 0,
         "HIGH": 0,
         "MEDIUM": 0,
         "LOW": 0,
         "INFO": 0,
+        "modules_ok": 0,
+        "modules_error": 0,
+        "modules_skipped": 0,
+        "total_findings": 0,
     }
     if not isinstance(session_results, dict):
         return totals
+
     for result in session_results.values():
         if not isinstance(result, dict):
             continue
-        if result.get("status") != "success":
-            continue
-        totals["CRITICAL"] += len(result.get("critical_findings") or [])
-        totals["HIGH"] += len(result.get("high_findings") or [])
-        totals["MEDIUM"] += len(result.get("medium_findings") or [])
-        totals["LOW"] += len(result.get("low_findings") or [])
+        st = str(result.get("status") or "").strip().lower()
+        if st == "success":
+            totals["modules_ok"] += 1
+            c, h, m, lo = _module_tier_counts(result)
+            totals["CRITICAL"] += c
+            totals["HIGH"] += h
+            totals["MEDIUM"] += m
+            totals["LOW"] += lo
+        elif st == "error":
+            totals["modules_error"] += 1
+        elif st in ("skipped", "not_installed"):
+            totals["modules_skipped"] += 1
+        else:
+            totals["modules_error"] += 1
+
+    totals["total_findings"] = (
+        int(totals["CRITICAL"])
+        + int(totals["HIGH"])
+        + int(totals["MEDIUM"])
+        + int(totals["LOW"])
+        + int(totals["INFO"])
+    )
     return totals
 
 
@@ -328,12 +482,7 @@ def _parse_module_selection(raw: str, target: Target) -> list[tuple[int, str, st
     id_to_row = {mid: (key, title) for mid, key, title, _ in _MODULE_ROWS}
 
     if len(tokens) == 1 and tokens[0] == "0":
-        out: list[tuple[int, str, str]] = []
-        for mid, key, title, _ in _MODULE_ROWS:
-            if key in _RUN_ALL_SKIP_KEYS:
-                continue
-            if target.supports(key):
-                out.append((mid, key, title))
+        out = _get_modules_for_run_all(target)
         if not out:
             raise ValueError("No modules available for this target type")
         return out
@@ -528,7 +677,10 @@ def _prompt_hash_module(cfg: dict[str, Any]) -> None:
     cfg["hash_wordlist"] = app_config.WORDLIST_PASSWORDS
 
 
-def _prompt_config(selected: list[tuple[int, str, str]]) -> dict[str, Any]:
+def _prompt_config(
+    selected: list[tuple[int, str, str]],
+    target: Target,
+) -> dict[str, Any]:
     """Collect threads, timeout, ports; reports are always json + html + log."""
     dt = app_config.DEFAULT_THREADS
     dto = app_config.DEFAULT_TIMEOUT
@@ -539,6 +691,8 @@ def _prompt_config(selected: list[tuple[int, str, str]]) -> dict[str, Any]:
         "quiet": False,
         "debug": False,
         "ports_range": "common",
+        "nmap_level": 1,
+        "allow_insecure_tls": False,
     }
 
     if any(key == "hash" for _, key, _ in selected):
@@ -627,6 +781,8 @@ def _prompt_config(selected: list[tuple[int, str, str]]) -> dict[str, Any]:
     if pr_raw.strip():
         cfg["ports_range"] = pr_raw.strip()
 
+    _prompt_nmap_scan_level(cfg, selected)
+
     console.print()
     console.print(
         Text.assemble(
@@ -655,6 +811,53 @@ def _prompt_config(selected: list[tuple[int, str, str]]) -> dict[str, Any]:
     return cfg
 
 
+def _prompt_nmap_scan_level(
+    cfg: dict[str, Any],
+    selected: list[tuple[int, str, str]],
+) -> None:
+    """When Port scan is selected: nmap phase-2 intensity (Standard / Enhanced / Vuln)."""
+    if not any(key == "ports" for _, key, _ in selected):
+        cfg.setdefault("nmap_level", 1)
+        return
+    console.print()
+    console.print(Text(" [PORT SCAN] nmap intensity:", style=f"bold {C_PRI}"))
+    console.print(
+        Text(
+            "  [1] Standard  — -sV only               (fast, default)",
+            style=C_DIM,
+        )
+    )
+    console.print(
+        Text(
+            "  [2] Enhanced  — -sV -sC                (recommended)",
+            style=C_DIM,
+        )
+    )
+    console.print(
+        Text(
+            "  [3] Vuln scan — --script vuln          (slow, noisy, authorized only)",
+            style=C_DIM,
+        )
+    )
+    console.print()
+    console.print(
+        Text.assemble(
+            ("  Select ", C_DIM),
+            ("[default: 1]", C_MUTED),
+            (": ", C_DIM),
+        ),
+        end="",
+    )
+    raw = _safe_input("")
+    if not sys.stdin.isatty():
+        console.print()
+    tok = (raw.strip() or "1").split()[0] if raw.strip() else "1"
+    if tok not in ("1", "2", "3"):
+        console.print(Text("  [!] Invalid — using Standard [1]", style=C_WARN))
+        tok = "1"
+    cfg["nmap_level"] = int(tok)
+
+
 def _mission_summary(
     target: Target,
     modules: list[tuple[int, str, str]],
@@ -668,16 +871,27 @@ def _mission_summary(
         f"Threads  : {cfg['threads']}",
         f"Timeout  : {cfg['timeout']}s",
         f"Ports    : {cfg.get('ports_range', 'common')}",
-        (
-            "Output mode : debug — full output + subprocess + HTTP tracing"
-            if cfg.get("debug")
-            else (
-                "Output mode : quiet — CRITICAL and HIGH only"
-                if cfg.get("quiet")
-                else "Output mode : normal"
-            )
-        ),
     ]
+    if any(k == "ports" for _, k, _ in modules):
+        lines.append(
+            "nmap level : "
+            + _describe_nmap_level_for_summary(int(cfg.get("nmap_level") or 1))
+        )
+    lines.append(
+        "Output mode : debug — full output + subprocess + HTTP tracing"
+        if cfg.get("debug")
+        else (
+            "Output mode : quiet — CRITICAL and HIGH only"
+            if cfg.get("quiet")
+            else "Output mode : normal"
+        )
+    )
+    if cfg.get("allow_insecure_tls"):
+        lines.append(
+            "TLS          : relaxed (verify=False) — self-signed allowed"
+        )
+    else:
+        lines.append("TLS          : strict (verify=True)")
     if "hash_value" in cfg:
         hv = str(cfg["hash_value"])
         preview = hv[:24] + ("…" if len(hv) > 24 else "")
@@ -696,6 +910,10 @@ def _mission_summary(
     lines.append("Export   : json · html · log (automatic)")
     if any(k in ("ports", "whois") for _, k, _ in modules):
         lines.append("CVE lookup : automatic (NVD API · NVD_API_KEY in .env)")
+    if cfg.get("run_all") and target.supports("hash"):
+        lines.append(
+            "[i] Hash module skipped — requires interactive input (use [9] individually)"
+        )
     body = "\n".join(lines)
     p = Panel(
         Text(body, style=C_DIM),
@@ -726,6 +944,12 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         parts = [f"{n} records", f"{t} tech"]
         if ax.get("vulnerable"):
             parts.append("AXFR VULN")
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} error{'s' if ne != 1 else ''}")
+        if nw:
+            parts.append(f"{nw} warn")
         return " · ".join(parts)
     if mod == "subdomain_enum":
         stats = res.get("stats") or {}
@@ -746,16 +970,28 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         stt = res.get("stats") or {}
         o = int(stt.get("open") or 0)
         rps = stt.get("req_per_sec", 0)
-        rs = res.get("risk_summary") or {}
-        crit = len(rs.get("CRITICAL") or [])
-        return f"{o} open · {rps} req/s · {crit} critical"
+        nl = int(res.get("nmap_level") or 1)
+        nm = _nmap_level_display_name(nl)
+        sc = len(res.get("critical_findings") or [])
+        parts = [f"{o} open", f"nmap {nm}", f"{rps} req/s", f"{sc} critical"]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        return " · ".join(parts)
     if mod == "dir_enum":
         stt = res.get("stats") or {}
         n = int(stt.get("found") or 0)
         rps = stt.get("req_per_sec", 0)
         rs = res.get("risk_summary") or {}
         crit = len(rs.get("CRITICAL") or [])
-        return f"{n} paths · {rps} req/s · {crit} critical"
+        parts = [f"{n} paths", f"{rps} req/s", f"{crit} critical"]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
     if mod == "harvester":
         stt = res.get("stats") or {}
         urls = int(stt.get("urls_crawled") or 0)
@@ -793,24 +1029,49 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         return f"{n} packets · {res.get('duration_elapsed_s', res.get('duration', ''))}s"
     if mod == "cve_lookup":
         sm = res.get("summary") or {}
-        return (
-            f"{sm.get('total_cves_found', 0)} CVEs · "
-            f"KEV {sm.get('in_cisa_kev', 0)} · "
-            f"{res.get('targets_checked', 0)} targets"
-        )
+        parts = [
+            f"{sm.get('total_cves_found', 0)} CVEs",
+            f"KEV {sm.get('in_cisa_kev', 0)}",
+            f"{res.get('targets_checked', 0)} targets",
+        ]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
     if mod == "waf_detect":
+        parts: list[str] = []
         if res.get("waf_detected"):
             w = res.get("waf") or {}
             bc = sum(1 for p in (res.get("probes") or []) if p.get("blocked"))
-            return f"{w.get('name', '?')} · {bc}/{len(res.get('probes') or [])} probes blocked"
-        return "no WAF fingerprint"
+            parts.append(
+                f"{w.get('name', '?')} · {bc}/{len(res.get('probes') or [])} probes blocked"
+            )
+        else:
+            parts.append("no WAF fingerprint")
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
     if mod == "url_harvester":
         stt = res.get("stats") or {}
-        return (
-            f"{stt.get('after_dedup', 0)} unique · "
-            f"{stt.get('total_collected', 0)} raw · "
-            f"{stt.get('duration_s', 0)}s"
-        )
+        parts = [
+            f"{stt.get('after_dedup', 0)} unique",
+            f"{stt.get('total_collected', 0)} raw",
+            f"{stt.get('duration_s', 0)}s",
+        ]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
     if mod == "subfinder_enum":
         st = res.get("status")
         if st == "not_installed":
@@ -818,12 +1079,51 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         if st == "skipped":
             return None
         stt = res.get("stats") or {}
-        return (
-            f"{stt.get('total_found', 0)} hosts · "
-            f"{stt.get('new_vs_wordlist', 0)} only-subfinder · "
-            f"{stt.get('duration_s', 0)}s"
-        )
+        parts = [
+            f"{stt.get('total_found', 0)} hosts",
+            f"{stt.get('new_vs_wordlist', 0)} only-subfinder",
+            f"{stt.get('duration_s', 0)}s",
+        ]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
     return None
+
+
+def _print_module_issues(res: dict[str, Any], quiet: bool) -> None:
+    """Surface module errors/warnings after run (HIGH-003 — no silent failures)."""
+    if quiet:
+        return
+    errs = res.get("errors")
+    err_list = errs if isinstance(errs, list) else []
+    shown = [e for e in err_list if e]
+    if not shown and res.get("error") is not None:
+        shown = [str(res["error"])]
+    for e in shown[:3]:
+        console.print(Text(f"     [!] Error: {e}", style=C_ERR))
+    if len(shown) > 3:
+        console.print(
+            Text(
+                f"     … and {len(shown) - 3} more error(s) (see session.log)",
+                style=C_DIM,
+            )
+        )
+    warns = res.get("warnings")
+    warn_list = warns if isinstance(warns, list) else []
+    wshown = [w for w in warn_list if w]
+    for w in wshown[:3]:
+        console.print(Text(f"     [i] Warning: {w}", style=C_WARN))
+    if len(wshown) > 3:
+        console.print(
+            Text(
+                f"     … and {len(wshown) - 3} more warning(s) (see session.log)",
+                style=C_DIM,
+            )
+        )
 
 
 def _run_modules_styled(
@@ -856,18 +1156,7 @@ def _run_modules_styled(
         if session_logger:
             session_logger.log(f"{title} complete: status={res.get('status')} id={mod_id}")
         status = res.get("status", "unknown")
-        if status == "error":
-            errs = res.get("errors")
-            err_list = errs if isinstance(errs, list) else []
-            raw_err = res.get("error")
-            if err_list:
-                msg = str(err_list[0])
-            elif raw_err is not None:
-                msg = str(raw_err)
-            else:
-                msg = "unknown error"
-            console.print(Text(f"     → error: {msg}", style=C_ERR))
-        elif res.get("module") == "dns_recon":
+        if res.get("module") == "dns_recon":
             if status == "skipped":
                 console.print(Text("     → skipped (wrong target type)", style=C_WARN))
             # Rich report already printed by dns_recon.run()
@@ -934,6 +1223,7 @@ def _run_modules_styled(
             console.print(
                 Text("     → not implemented yet (stub)", style=C_DIM)
             )
+        _print_module_issues(res, bool(cfg.get("quiet", False)))
         rows.append(
             {
                 "module": title,
@@ -976,19 +1266,48 @@ def _results_table(rows: list[dict[str, Any]]) -> None:
     console.print(table)
 
 
+def _open_html_report_detached(html_path: str) -> bool:
+    """
+    Abre o HTML no browser padrão sem bloquear o terminal.
+
+    ``start_new_session=True`` desvincula o processo do browser do GhostOpcode;
+    stdout/stderr do browser não aparecem no terminal.
+    """
+    try:
+        subprocess.Popen(
+            ["xdg-open", str(html_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except OSError:
+        return False
+
+
 def _session_complete_panel(
     target: Target,
     session_dir: str,
     duration_str: str,
     modules_run: list[str],
-    counts: dict[str, int],
+    counts: dict[str, Any],
     html_path: str | None,
 ) -> None:
     """Final boxed summary: target, wall time, severity roll-up, output paths."""
+    ok = int(counts.get("modules_ok", 0))
+    err_n = int(counts.get("modules_error", 0))
+    skip_n = int(counts.get("modules_skipped", 0))
+    mod_line = f"{ok} executed"
+    if err_n:
+        mod_line += f" · {err_n} error{'s' if err_n != 1 else ''}"
+    if skip_n:
+        mod_line += f" · {skip_n} skipped"
+    if ok == 0 and err_n == 0 and skip_n == 0 and modules_run:
+        mod_line = f"{len(modules_run)} module(s) in session"
     body_lines = [
         f"Target     : {target}",
         f"Duration   : {duration_str}",
-        f"Modules    : {len(modules_run)} executed",
+        f"Modules    : {mod_line}",
         (
             f"Severity   : Critical {counts.get('CRITICAL', 0)}  ·  "
             f"High {counts.get('HIGH', 0)}  ·  "
@@ -1052,6 +1371,8 @@ def main() -> None:
 
     session_start_iso = _dt.datetime.now().isoformat(timespec="seconds")
     session_dir = _make_session_output_dir(target)
+    _cache_clear()
+    dns_cache_clear()
 
     # --- Modules ---------------------------------------------------------------
     _render_module_menu(target)
@@ -1065,9 +1386,35 @@ def main() -> None:
             console.print(Text("❯ ", style=f"bold {C_PRI}"), end="")
             sel_raw = _safe_input("")
 
+    run_all_mode = sel_raw.strip() == "0"
+    if run_all_mode:
+        skipped_titles = [
+            title
+            for mid, key, title, _ in _MODULE_ROWS
+            if key in SKIP_IN_RUN_ALL and target.supports(key)
+        ]
+        if skipped_titles:
+            console.print()
+            console.print(
+                Text(
+                    " [i] The following require interactive input and are skipped in RUN ALL:",
+                    style=C_DIM,
+                )
+            )
+            for stitle in skipped_titles:
+                console.print(
+                    Text(
+                        f"     · {stitle} — use individually from the menu",
+                        style=C_MUTED,
+                    )
+                )
+            console.print()
+
     # --- Config ----------------------------------------------------------------
-    config = _prompt_config(selected)
+    config = _prompt_config(selected, target)
     config["output_dir"] = os.path.join(session_dir, "files")
+    config["run_all"] = run_all_mode
+    config["session_target"] = target.value
 
     # --- Confirm ---------------------------------------------------------------
     _mission_summary(target, selected, config)
@@ -1079,9 +1426,28 @@ def main() -> None:
     module_titles = [t for _, _, t in selected]
     session_logger.write_header(target.value, module_titles)
 
+    hv_cfg = (config.get("hash_value") or "").strip()
+    if hv_cfg:
+        identify = _load_module("modules.hash_module", "identify_hash")
+        type_label = "unidentified"
+        if callable(identify):
+            try:
+                ids = identify(hv_cfg)
+                if ids:
+                    type_label = f"{ids[0].get('algorithm', 'unidentified')} candidate"
+            except Exception:
+                pass
+        session_logger.log_operator_action(
+            action="Hash submitted for analysis",
+            value=hv_cfg,
+            redact=True,
+            placeholder=f"[hash: {len(hv_cfg)} chars, type: {type_label}]",
+        )
+
     t_run = time.perf_counter()
     session_logger.start_stdout_tee()
     try:
+        config["session_logger"] = session_logger
         results, raw_results = _run_modules_styled(
             selected, target, config, session_logger
         )
@@ -1092,7 +1458,8 @@ def main() -> None:
                     "module": "hash_module",
                     "target": target.value,
                     "status": ModuleStatus.SKIPPED.value,
-                    "warnings": [hint],
+                    "warnings": [_HASH_SKIP_RUN_ALL_WARNING],
+                    "skip_reason": _HASH_SKIP_RUN_ALL_REASON,
                 }
             )
             results.append(
@@ -1108,8 +1475,6 @@ def main() -> None:
             "port_scan" in raw_results or "whois_scan" in raw_results
         )
         if has_port_or_whois:
-            from modules.cve_lookup import run as run_cve
-
             console.print()
             console.print(
                 Text(
@@ -1117,10 +1482,24 @@ def main() -> None:
                     style=f"bold {C_PRI}",
                 )
             )
-            cve_results = run_cve(raw_results, config)
-            cve_packed = pack_session_result(
-                {**cve_results, "target": target.value}
-            )
+            run_cve = _load_module("modules.cve_lookup", "run")
+            if run_cve is None:
+                console.print(
+                    Text(
+                        " [!] CVE lookup module failed to load",
+                        style=C_ERR,
+                    )
+                )
+                cve_packed = module_error_dict(
+                    "cve_lookup",
+                    target.value,
+                    "Module failed to import",
+                )
+            else:
+                cve_results = run_cve(raw_results, config)
+                cve_packed = pack_session_result(
+                    {**cve_results, "target": target.value}
+                )
             raw_results["cve_lookup"] = cve_packed
             results.append(
                 {
@@ -1139,6 +1518,7 @@ def main() -> None:
                 f"CVE lookup complete: status={cve_packed.get('status')}"
             )
     finally:
+        config.pop("session_logger", None)
         session_logger.stop_stdout_tee()
     elapsed_modules_s = time.perf_counter() - t_run
     wall_elapsed_s = time.perf_counter() - t_session_wall
@@ -1180,12 +1560,14 @@ def main() -> None:
         console.print(Text(f"    ✗ Report generation failed: {e}", style=C_ERR))
 
     if html_path:
-        try:
-            webbrowser.open(Path(html_path).as_uri())
+        if _open_html_report_detached(html_path):
             console.print(
-                Text(f"    → Abrindo relatório HTML no browser…", style=C_MUTED)
+                Text(
+                    "    → Abrindo relatório HTML no browser (processo em segundo plano)…",
+                    style=C_MUTED,
+                )
             )
-        except Exception:  # noqa: BLE001
+        else:
             console.print(
                 Text(
                     f"    [i] Abra manualmente: {html_path}",

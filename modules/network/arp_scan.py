@@ -144,7 +144,11 @@ def get_vendor(mac: str) -> str:
     return OUI_DATABASE.get(oui, "Unknown")
 
 
-def resolve_hostname(ip: str, timeout: float) -> str | None:
+def resolve_hostname(
+    ip: str,
+    timeout: float,
+    warnings: list[str] | None = None,
+) -> str | None:
     """
     Attempt reverse DNS lookup for discovered host.
     Returns hostname or None — never raises.
@@ -154,7 +158,14 @@ def resolve_hostname(ip: str, timeout: float) -> str | None:
         socket.setdefaulttimeout(min(3.0, max(0.5, timeout)))
         name, _, _ = socket.gethostbyaddr(ip)
         return name
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None and not any(
+            w.startswith("reverse DNS") for w in warnings
+        ):
+            warnings.append(
+                f"reverse DNS lookup failed (e.g. {ip}): {type(e).__name__}: {e} "
+                "— further rDNS failures omitted"
+            )
         return None
     finally:
         try:
@@ -272,6 +283,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             "duration_s": 0.0,
         },
         "errors": errors,
+        "warnings": [],
         "findings": [],
     }
 
@@ -351,7 +363,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         ip = h["ip"]
         mac = h["mac"]
         vendor = get_vendor(mac)
-        hostname = resolve_hostname(ip, float(timeout))
+        hostname = resolve_hostname(ip, float(timeout), base["warnings"])
         cat = categorize_device(ip, mac, vendor, hostname, [])
         row = {
             "ip": ip,

@@ -16,7 +16,6 @@ from typing import Any, Callable
 from urllib.parse import urljoin
 
 import httpx
-import urllib3
 from rich import box
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
@@ -39,10 +38,9 @@ from config import (
     WORDLIST_DIRS_FAST,
     WORDLIST_DIRS_SMALL,
 )
+from utils.http_client import httpx_verify, report_ssl_certificate_problem
 from utils.output import display_findings
 from utils.target_parser import Target
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 C_PRI = "#00FF41"
 C_DIM = "#6F7F86"
@@ -254,42 +252,81 @@ _CATEGORY_ORDER: list[str] = [
 ]
 
 
-def resolve_base_url(target: Target, timeout: float) -> str | None:
+def resolve_base_url(
+    target: Target,
+    timeout: float,
+    config: dict[str, Any],
+    ssl_notes: list[str] | None = None,
+    diagnostics: list[str] | None = None,
+) -> str | None:
     """
     Determine the base URL to enumerate.
     Try HTTPS first, fallback to HTTP.
     """
     host = target.value
     schemes = ("https", "http")
+    verify_tls = httpx_verify(config)
     for scheme in schemes:
         base = f"{scheme}://{host}"
         root = base.rstrip("/") + "/"
         try:
             with httpx.Client(
-                verify=False,
+                verify=verify_tls,
                 follow_redirects=False,
                 timeout=timeout,
                 headers={"User-Agent": USER_AGENT},
             ) as c:
                 try:
                     r = c.head(root, timeout=timeout)
-                except httpx.HTTPError:
+                except httpx.HTTPError as e:
+                    if verify_tls and _httpx_err_looks_like_tls(e):
+                        report_ssl_certificate_problem(
+                            root.rstrip("/"),
+                            config,
+                            ssl_warnings=ssl_notes,
+                        )
                     r = None
                 if r is not None and r.status_code > 0 and r.status_code < 600:
                     return base.rstrip("/")
-                r2 = c.get(root, timeout=timeout)
+                try:
+                    r2 = c.get(root, timeout=timeout)
+                except httpx.HTTPError as e:
+                    if verify_tls and _httpx_err_looks_like_tls(e):
+                        report_ssl_certificate_problem(
+                            root.rstrip("/"),
+                            config,
+                            ssl_warnings=ssl_notes,
+                        )
+                    continue
                 if r2.status_code > 0 and r2.status_code < 600:
                     return base.rstrip("/")
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            if diagnostics is not None:
+                diagnostics.append(
+                    f"dir_enum base URL ({scheme}): {type(e).__name__}: {e}"
+                )
             continue
     return None
+
+
+def _httpx_err_looks_like_tls(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(
+        k in s
+        for k in ("certificate", "cert verify", "ssl", "tls", "handshake")
+    )
 
 
 def _body_fingerprint(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def detect_catchall(base_url: str, timeout: float, client: httpx.Client) -> dict[str, Any]:
+def detect_catchall(
+    base_url: str,
+    timeout: float,
+    client: httpx.Client,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Detect HTTP catchall/wildcard responses using three random paths.
     """
@@ -309,7 +346,11 @@ def detect_catchall(base_url: str, timeout: float, client: httpx.Client) -> dict
             r = client.get(url, timeout=timeout)
             body = r.text[:4096]
             samples.append((r.status_code, body))
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            if warnings is not None and len(warnings) < 6:
+                warnings.append(
+                    f"catchall random-path probe: {type(e).__name__}: {e}"
+                )
             samples.append((0, ""))
 
     statuses = [s[0] for s in samples]
@@ -821,6 +862,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "risk_summary": {"CRITICAL": [], "HIGH": [], "MEDIUM": [], "LOW": []},
         "git_intel": {},
         "errors": [],
+        "warnings": [],
         "findings": [],
     }
 
@@ -879,7 +921,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     limits = httpx.Limits(max_connections=max(threads * 2, 32))
     client = httpx.Client(
-        verify=False,
+        verify=httpx_verify(config),
         follow_redirects=False,
         timeout=timeout,
         headers={"User-Agent": USER_AGENT},
@@ -887,7 +929,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        base_url = resolve_base_url(target, timeout)
+        base_url = resolve_base_url(
+            target,
+            timeout,
+            config,
+            ssl_notes=base["errors"],
+            diagnostics=base["warnings"],
+        )
         if not base_url:
             base["status"] = "error"
             base["error"] = "Could not reach target over HTTP/HTTPS"
@@ -898,7 +946,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["base_url"] = base_url
         _render_header(base_url, n_total)
 
-        catchall = detect_catchall(base_url, timeout, client)
+        catchall = detect_catchall(base_url, timeout, client, base["warnings"])
         base["catchall"] = {
             "detected": catchall["detected"],
             "strategy": catchall.get("strategy", "none"),
@@ -929,6 +977,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         recent_hits: deque[str] = deque(maxlen=14)
         window: deque[float] = deque()
         interrupted = False
+        probe_exc_kinds: set[str] = set()
 
         def record_done() -> None:
             nonlocal done_count
@@ -1008,13 +1057,22 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                             recent_hits.append(_hit_line_str(fn))
 
             except httpx.TimeoutException:
-                if verbose:
-                    with lock:
-                        base["errors"].append(f"timeout: {url}")
+                k = "TimeoutException"
+                with lock:
+                    if k not in probe_exc_kinds:
+                        probe_exc_kinds.add(k)
+                        base["errors"].append(
+                            "dir_enum: HTTP timeout during path probes — "
+                            "further timeouts omitted"
+                        )
             except Exception as e:  # noqa: BLE001
-                if verbose:
-                    with lock:
-                        base["errors"].append(str(e))
+                k = type(e).__name__
+                with lock:
+                    if k not in probe_exc_kinds:
+                        probe_exc_kinds.add(k)
+                        base["errors"].append(
+                            f"dir_enum path probe ({k}): {e} — further {k} omitted"
+                        )
             finally:
                 record_done()
 
@@ -1079,9 +1137,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                             try:
                                 fut.result()
                             except Exception as e:  # noqa: BLE001
-                                if verbose:
-                                    with lock:
-                                        base["errors"].append(str(e))
+                                k = type(e).__name__
+                                with lock:
+                                    if k not in probe_exc_kinds:
+                                        probe_exc_kinds.add(k)
+                                        base["errors"].append(
+                                            f"dir_enum worker ({k}): {e} — further {k} omitted"
+                                        )
                             submit_batch(executor)
                     else:
                         submit_batch(executor)

@@ -18,6 +18,8 @@ from typing import Any, Callable
 import dns.exception
 import dns.resolver
 from rich import box
+
+from utils.dns_cache import cache_stats, resolve as dns_resolve
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
@@ -113,30 +115,61 @@ _CATEGORY_LABELS: dict[str, str] = {
 }
 
 
+def _dns_enum_warn(
+    warnings: list[str] | None,
+    keys: set[str] | None,
+    lock: threading.Lock | None,
+    key: str,
+    msg: str,
+) -> None:
+    if warnings is None or keys is None:
+        return
+    if lock is not None:
+        with lock:
+            if key in keys:
+                return
+            keys.add(key)
+            warnings.append(msg)
+    else:
+        if key in keys:
+            return
+        keys.add(key)
+        warnings.append(msg)
+
+
 def _random_label(length: int = 16) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def _resolve_a_first(fqdn: str, timeout: int) -> str | None:
+def _resolve_a_first(
+    fqdn: str,
+    timeout: int,
+    warnings: list[str] | None = None,
+    warn_keys: set[str] | None = None,
+    lock: threading.Lock | None = None,
+) -> str | None:
     """Return first IPv4 address or None. Never raises."""
     try:
-        resolver = dns.resolver.Resolver(configure=True)
-        resolver.timeout = float(timeout)
-        resolver.lifetime = float(timeout)
-        ans = resolver.resolve(fqdn, "A")
-        return str(next(iter(ans)))
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.Timeout):
-        return None
-    except dns.exception.DNSException:
-        return None
-    except (OSError, StopIteration):
-        return None
-    except Exception:  # noqa: BLE001
+        return dns_resolve(fqdn, int(max(1, timeout)))
+    except Exception as e:  # noqa: BLE001
+        _dns_enum_warn(
+            warnings,
+            warn_keys,
+            lock,
+            f"resolve_a:{type(e).__name__}",
+            f"_resolve_a_first ({fqdn}): {type(e).__name__}: {e}",
+        )
         return None
 
 
-def detect_wildcard(domain: str, timeout: int) -> str | None:
+def detect_wildcard(
+    domain: str,
+    timeout: int,
+    warnings: list[str] | None = None,
+    warn_keys: set[str] | None = None,
+    lock: threading.Lock | None = None,
+) -> str | None:
     """
     Detect wildcard DNS by querying random non-existent-looking subdomains.
 
@@ -148,7 +181,7 @@ def detect_wildcard(domain: str, timeout: int) -> str | None:
     for _ in range(3):
         sub = _random_label(16)
         fqdn = f"{sub}.{domain}"
-        ip = _resolve_a_first(fqdn, timeout)
+        ip = _resolve_a_first(fqdn, timeout, warnings, warn_keys, lock)
         if ip is None:
             return None
         ips.append(ip)
@@ -157,7 +190,14 @@ def detect_wildcard(domain: str, timeout: int) -> str | None:
     return None
 
 
-def resolve_subdomain(subdomain: str, domain: str, timeout: int) -> dict[str, Any] | None:
+def resolve_subdomain(
+    subdomain: str,
+    domain: str,
+    timeout: int,
+    warnings: list[str] | None = None,
+    warn_keys: set[str] | None = None,
+    lock: threading.Lock | None = None,
+) -> dict[str, Any] | None:
     """
     Attempt to resolve a single candidate subdomain.
 
@@ -167,18 +207,31 @@ def resolve_subdomain(subdomain: str, domain: str, timeout: int) -> dict[str, An
     try:
         time.sleep(random.uniform(0.01, 0.05))
         fqdn = f"{subdomain}.{domain}".lower()
-        resolver = dns.resolver.Resolver(configure=True)
-        resolver.timeout = float(timeout)
-        resolver.lifetime = float(timeout)
+        tto = float(timeout)
+        to_i = int(max(1, round(tto)))
 
-        try:
-            ans = resolver.resolve(fqdn, "A")
-            ips = sorted({str(r) for r in ans})
+        direct = dns_resolve(fqdn, to_i)
+        if direct:
             return {
                 "fqdn": fqdn,
                 "subdomain": subdomain,
                 "type": "A",
-                "ips": ips,
+                "ips": [direct],
+                "cname": None,
+            }
+
+        resolver = dns.resolver.Resolver(configure=True)
+        resolver.timeout = tto
+        resolver.lifetime = tto
+
+        try:
+            ans = resolver.resolve(fqdn, "A")
+            ips_a = sorted({str(r) for r in ans})
+            return {
+                "fqdn": fqdn,
+                "subdomain": subdomain,
+                "type": "A",
+                "ips": ips_a,
                 "cname": None,
             }
         except dns.resolver.NXDOMAIN:
@@ -195,12 +248,8 @@ def resolve_subdomain(subdomain: str, domain: str, timeout: int) -> dict[str, An
         try:
             ans = resolver.resolve(fqdn, "CNAME")
             target = str(ans[0].target).rstrip(".").lower()
-            ips: list[str] = []
-            try:
-                ans2 = resolver.resolve(target, "A")
-                ips = sorted({str(r) for r in ans2})
-            except Exception:  # noqa: BLE001
-                pass
+            cname_ip = dns_resolve(target, to_i)
+            ips: list[str] = [cname_ip] if cname_ip else []
             return {
                 "fqdn": fqdn,
                 "subdomain": subdomain,
@@ -218,7 +267,14 @@ def resolve_subdomain(subdomain: str, domain: str, timeout: int) -> dict[str, An
             return None
         except OSError:
             return None
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _dns_enum_warn(
+            warnings,
+            warn_keys,
+            lock,
+            f"resolve_sub:{type(e).__name__}",
+            f"resolve_subdomain ({subdomain}.{domain}): {type(e).__name__}: {e}",
+        )
         return None
     return None
 
@@ -407,6 +463,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "categories": {"CRITICAL": [], "HIGH": [], "MEDIUM": [], "LOW": []},
         "takeover_candidates": [],
         "errors": [],
+        "warnings": [],
     }
 
     if not target.is_domain():
@@ -528,7 +585,11 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     _render_header(domain, n_words)
 
-    w_ip = detect_wildcard(domain, timeout)
+    lock = threading.Lock()
+    dns_warn_keys: set[str] = set()
+    w_ip = detect_wildcard(
+        domain, timeout, base["warnings"], dns_warn_keys, lock
+    )
     if w_ip:
         base["wildcard"] = {"detected": True, "ip": w_ip}
         console.print(Text(f" [!] WILDCARD DNS detected on {domain}", style=C_ERR))
@@ -546,7 +607,6 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     else:
         base["wildcard"] = {"detected": False, "ip": None}
 
-    lock = threading.Lock()
     done_count = 0
     found_raw: list[dict[str, Any]] = []
     recent_hits: deque[str] = deque(maxlen=14)
@@ -577,9 +637,18 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             found_raw.append(row)
             recent_hits.append(line)
 
+    fut_exc_kinds: set[str] = set()
+
     def worker(word: str) -> None:
         try:
-            r = resolve_subdomain(word, domain, timeout)
+            r = resolve_subdomain(
+                word,
+                domain,
+                timeout,
+                base["warnings"],
+                dns_warn_keys,
+                lock,
+            )
             if r:
                 on_hit(r)
         finally:
@@ -654,9 +723,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                         try:
                             fut.result()
                         except Exception as e:  # noqa: BLE001
-                            if verbose:
-                                with lock:
-                                    base["errors"].append(str(e))
+                            k = type(e).__name__
+                            with lock:
+                                if k not in fut_exc_kinds:
+                                    fut_exc_kinds.add(k)
+                                    base["errors"].append(
+                                        f"subdomain_enum worker ({k}): {e} — further {k} omitted"
+                                    )
                         submit_batch(executor)
                 else:
                     submit_batch(executor)
@@ -763,6 +836,15 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             (f"     Duration     : {duration:.2f}s", C_DIM),
         )
     )
+    if config.get("debug"):
+        st = cache_stats()
+        console.print(
+            Text(
+                f"     [DEBUG] DNS cache: {st['resolved']} resolved · "
+                f"{st['failed']} failed · {st['total']} total entries",
+                style=C_MUTED,
+            )
+        )
 
     return base
 

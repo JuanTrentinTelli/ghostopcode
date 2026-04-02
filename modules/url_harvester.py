@@ -7,18 +7,20 @@ from __future__ import annotations
 import json
 import re
 import shutil
+
+import requests
 import subprocess
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import requests
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
 from config import DEFAULT_TIMEOUT
+from utils.http_client import get as http_get
 from utils.output import debug_log, detect_sensitive_in_url, display_findings
 from utils.target_parser import Target
 
@@ -246,6 +248,7 @@ def fetch_wayback(
     domain: str,
     timeout: int,
     errors: list[str],
+    warnings: list[str],
     config: dict[str, Any] | None = None,
 ) -> list[str]:
     """
@@ -283,7 +286,16 @@ def fetch_wayback(
                 config=config,
             )
             t_wb = time.perf_counter()
-            resp = requests.get(base, params=params, timeout=timeout)
+            resp = http_get(
+                base,
+                config,
+                params=params,
+                timeout=timeout,
+                ssl_warnings=errors,
+            )
+            if resp is None:
+                errors.append(f"Wayback ({url_spec}): SSL/connection failed")
+                continue
             resp.raise_for_status()
             data = resp.json()
             n_before = len(urls)
@@ -299,20 +311,45 @@ def fetch_wayback(
                 elapsed=time.perf_counter() - t_wb,
                 config=config,
             )
+        except requests.exceptions.Timeout:
+            warnings.append(f"Wayback Machine timeout after {timeout}s ({url_spec!r})")
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            warnings.append(
+                f"Wayback Machine HTTP {code} for {url_spec!r}: {e}"
+            )
+        except requests.exceptions.ConnectionError as e:
+            errors.append(
+                f"Wayback connection failed ({url_spec}): {type(e).__name__}: {e}"
+            )
+        except (json.JSONDecodeError, ValueError) as e:
+            errors.append(
+                f"Wayback JSON decode ({url_spec}): {type(e).__name__}: {e}"
+            )
         except Exception as e:  # noqa: BLE001
-            errors.append(f"Wayback ({url_spec}): {e}")
+            errors.append(
+                f"Wayback fetch failed ({url_spec}): {type(e).__name__}: {e}"
+            )
 
     return list(urls)
 
 
-def fetch_commoncrawl(domain: str, timeout: int, errors: list[str]) -> list[str]:
+def fetch_commoncrawl(
+    domain: str,
+    timeout: int,
+    errors: list[str],
+    warnings: list[str],
+    config: dict[str, Any],
+) -> list[str]:
     """
     Fetch URLs from the latest Common Crawl CDX index (HTTP JSON lines).
     """
     index_url = "https://index.commoncrawl.org/collinfo.json"
     latest: str | None = None
     try:
-        r = requests.get(index_url, timeout=timeout)
+        r = http_get(index_url, config, timeout=timeout, ssl_warnings=errors)
+        if r is None:
+            raise RuntimeError("collinfo SSL/connection failed")
         r.raise_for_status()
         indexes = r.json()
         if isinstance(indexes, list) and indexes:
@@ -321,8 +358,19 @@ def fetch_commoncrawl(domain: str, timeout: int, errors: list[str]) -> list[str]
                 latest = (
                     f"https://index.commoncrawl.org/{indexes[0]['id']}-index"
                 )
+    except requests.exceptions.Timeout:
+        warnings.append(f"Common Crawl collinfo timeout after {timeout}s — using fallback index")
+        latest = "https://index.commoncrawl.org/CC-MAIN-2024-10-index"
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code if e.response is not None else "?"
+        warnings.append(
+            f"Common Crawl collinfo HTTP {code}: {e} — using fallback index"
+        )
+        latest = "https://index.commoncrawl.org/CC-MAIN-2024-10-index"
     except Exception as e:  # noqa: BLE001
-        errors.append(f"Common Crawl collinfo: {e}")
+        errors.append(
+            f"Common Crawl collinfo failed: {type(e).__name__}: {e} — using fallback index"
+        )
         latest = "https://index.commoncrawl.org/CC-MAIN-2024-10-index"
 
     if not latest:
@@ -340,7 +388,16 @@ def fetch_commoncrawl(domain: str, timeout: int, errors: list[str]) -> list[str]
     for url_pat in (f"*.{domain}", domain):
         params["url"] = url_pat
         try:
-            resp = requests.get(latest, params=params, timeout=timeout)
+            resp = http_get(
+                latest,
+                config,
+                params=params,
+                timeout=timeout,
+                ssl_warnings=errors,
+            )
+            if resp is None:
+                errors.append(f"Common Crawl query ({url_pat}): SSL/connection failed")
+                continue
             if resp.status_code == 404:
                 continue
             resp.raise_for_status()
@@ -355,13 +412,34 @@ def fetch_commoncrawl(domain: str, timeout: int, errors: list[str]) -> list[str]
                         urls.add(str(u).strip())
                 except json.JSONDecodeError:
                     continue
+        except requests.exceptions.Timeout:
+            warnings.append(
+                f"Common Crawl query timeout ({url_pat}) after {timeout}s"
+            )
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            warnings.append(
+                f"Common Crawl query HTTP {code} ({url_pat}): {e}"
+            )
+        except requests.exceptions.ConnectionError as e:
+            errors.append(
+                f"Common Crawl connection ({url_pat}): {type(e).__name__}: {e}"
+            )
         except Exception as e:  # noqa: BLE001
-            errors.append(f"Common Crawl query ({url_pat}): {e}")
+            errors.append(
+                f"Common Crawl query ({url_pat}): {type(e).__name__}: {e}"
+            )
 
     return list(urls)
 
 
-def fetch_alienvault(domain: str, timeout: int, errors: list[str]) -> list[str]:
+def fetch_alienvault(
+    domain: str,
+    timeout: int,
+    errors: list[str],
+    warnings: list[str],
+    config: dict[str, Any],
+) -> list[str]:
     """
     Fetch URLs from AlienVault OTX URL list for the indicator (domain).
     """
@@ -369,20 +447,44 @@ def fetch_alienvault(domain: str, timeout: int, errors: list[str]) -> list[str]:
     params = {"limit": 500, "page": 1}
     urls: list[str] = []
     try:
-        resp = requests.get(url, params=params, timeout=timeout)
+        resp = http_get(
+            url,
+            config,
+            params=params,
+            timeout=timeout,
+            ssl_warnings=errors,
+        )
+        if resp is None:
+            errors.append("AlienVault OTX: SSL/connection failed")
+            return []
         if resp.status_code == 429:
-            errors.append("AlienVault OTX: rate limited (429)")
+            warnings.append("AlienVault OTX: rate limited (429) — skipped")
             return []
         if resp.status_code == 403:
-            errors.append("AlienVault OTX: forbidden (403) — may require API key")
+            warnings.append("AlienVault OTX: forbidden (403) — may require API key")
             return []
         resp.raise_for_status()
         data = resp.json()
         for entry in data.get("url_list") or []:
             if isinstance(entry, dict) and entry.get("url"):
                 urls.append(str(entry["url"]).strip())
+    except requests.exceptions.Timeout:
+        warnings.append(f"AlienVault OTX timeout after {timeout}s")
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code if e.response is not None else "?"
+        warnings.append(f"AlienVault OTX HTTP {code}: {e}")
+    except requests.exceptions.ConnectionError as e:
+        errors.append(
+            f"AlienVault OTX connection failed: {type(e).__name__}: {e}"
+        )
+    except (json.JSONDecodeError, ValueError) as e:
+        errors.append(
+            f"AlienVault OTX JSON decode: {type(e).__name__}: {e}"
+        )
     except Exception as e:  # noqa: BLE001
-        errors.append(f"AlienVault OTX: {e}")
+        errors.append(
+            f"AlienVault OTX fetch failed: {type(e).__name__}: {e}"
+        )
     return list(dict.fromkeys(urls))
 
 
@@ -410,7 +512,10 @@ def fetch_gau(domain: str, timeout: int, errors: list[str]) -> list[str]:
     return []
 
 
-def deduplicate_urls(urls: list[str]) -> list[str]:
+def deduplicate_urls(
+    urls: list[str],
+    warnings: list[str] | None = None,
+) -> list[str]:
     """
     Deduplicate URLs by host + path + sorted query parameter *names* (values
     collapsed) so /user?id=1 and /user?id=999 count as one attack surface.
@@ -433,7 +538,12 @@ def deduplicate_urls(urls: list[str]) -> list[str]:
             if pattern not in seen_patterns:
                 seen_patterns.add(pattern)
                 unique.append(u)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            if warnings is not None and len(warnings) < 5:
+                clip = u if len(u) <= 96 else u[:93] + "…"
+                warnings.append(
+                    f"URL dedup parse failed ({type(e).__name__}: {e}): {clip!r}"
+                )
             if u not in unique:
                 unique.append(u)
 
@@ -506,6 +616,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     verbose = bool(config.get("verbose"))
     quiet = bool(config.get("quiet", False))
     errors: list[str] = []
+    warnings: list[str] = []
 
     base: dict[str, Any] = {
         "module": "url_harvester",
@@ -523,6 +634,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "stats": {},
         "errors": errors,
         "risk_summary": {},
+        "warnings": warnings,
     }
 
     domain = target.value.lower().strip()
@@ -550,7 +662,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     # --- Collect ----------------------------------------------------------------
     console.print()
-    wb = fetch_wayback(domain, timeout, errors, config)
+    wb = fetch_wayback(domain, timeout, errors, warnings, config)
     base["sources"]["wayback"]["count"] = len(wb)
     console.print(
         Text.assemble(
@@ -559,7 +671,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    cc = fetch_commoncrawl(domain, timeout, errors)
+    cc = fetch_commoncrawl(domain, timeout, errors, warnings, config)
     base["sources"]["commoncrawl"]["count"] = len(cc)
     console.print(
         Text.assemble(
@@ -568,7 +680,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    otx = fetch_alienvault(domain, timeout, errors)
+    otx = fetch_alienvault(domain, timeout, errors, warnings, config)
     base["sources"]["alienvault"]["count"] = len(otx)
     console.print(
         Text.assemble(
@@ -594,7 +706,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     raw_pull_total = len(wb) + len(cc) + len(otx) + len(gau_urls)
     merged = _merge_and_cap([wb, cc, otx, gau_urls], MAX_URLS_TOTAL)
     base["total_urls"] = len(merged)
-    unique = deduplicate_urls(merged)
+    unique = deduplicate_urls(merged, warnings)
     base["unique_urls"] = len(unique)
 
     console.print(Text(f"       {'─' * 36}", style=C_MUTED))

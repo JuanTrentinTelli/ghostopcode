@@ -9,12 +9,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import dns.exception
 import dns.resolver
+
+from utils.dns_cache import cache_stats, resolve as dns_resolve, resolve_many
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -121,15 +123,17 @@ def check_subfinder() -> dict[str, Any]:
             "available": False,
             "binary": None,
             "version": None,
+            "error": "subfinder binary not found on PATH",
             "install": (
                 "go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
             ),
         }
 
     version_s = "unknown"
+    check_warnings: list[str] = []
     try:
         result = subprocess.run(
-            ["subfinder", "-version"],
+            [binary, "-version"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -138,14 +142,31 @@ def check_subfinder() -> dict[str, Any]:
         if blob:
             m = re.search(r"v[\d.]+", blob)
             version_s = m.group(0) if m else blob.splitlines()[0][:80]
-    except Exception:  # noqa: BLE001
-        pass
+    except FileNotFoundError as e:
+        return {
+            "available": False,
+            "binary": binary,
+            "version": None,
+            "error": f"subfinder binary missing at path: {e}",
+            "install": (
+                "go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+            ),
+        }
+    except subprocess.TimeoutExpired:
+        check_warnings.append(
+            "subfinder -version timed out (15s) — version string unknown; binary assumed usable"
+        )
+    except Exception as e:  # noqa: BLE001
+        check_warnings.append(
+            f"subfinder -version failed: {type(e).__name__}: {e} — version unknown"
+        )
 
     return {
         "available": True,
         "binary": binary,
         "version": version_s,
         "install": None,
+        "check_warnings": check_warnings,
     }
 
 
@@ -274,30 +295,35 @@ def run_subfinder(
     return sorted(set(out))
 
 
-def resolve_subdomain(fqdn: str, timeout_s: int) -> dict[str, Any] | None:
+def resolve_subdomain(
+    fqdn: str,
+    timeout_s: int,
+    errors: list[str] | None = None,
+    err_lock: threading.Lock | None = None,
+    exc_kinds: set[str] | None = None,
+) -> dict[str, Any] | None:
     """
-    Resolve ``fqdn`` to an A record (thread-safe via dnspython).
+    Resolve ``fqdn`` to an IPv4 (session DNS cache via socket).
 
     Returns ``{"fqdn", "ip", "source"}`` or None.
     """
     try:
-        res = dns.resolver.Resolver(configure=True)
-        to = float(max(1, min(15, timeout_s)))
-        res.timeout = to
-        res.lifetime = to
-        ans = res.resolve(fqdn, "A")
-        ip = str(sorted({str(r) for r in ans})[0])
+        to_i = int(max(1, min(15, timeout_s)))
+        ip = dns_resolve(fqdn.strip(), to_i)
+        if not ip:
+            return None
         return {"fqdn": fqdn, "ip": ip, "source": "subfinder"}
-    except (
-        dns.resolver.NXDOMAIN,
-        dns.resolver.NoAnswer,
-        dns.resolver.Timeout,
-        dns.exception.DNSException,
-        OSError,
-        IndexError,
-    ):
-        return None
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        ek = type(e).__name__
+        if errors is not None and err_lock is not None and exc_kinds is not None:
+            with err_lock:
+                tag = f"inner:{ek}"
+                if tag not in exc_kinds:
+                    exc_kinds.add(tag)
+                    errors.append(
+                        f"resolve_subdomain unexpected ({fqdn}): {ek}: {e} "
+                        f"— further inner {ek} omitted"
+                    )
         return None
 
 
@@ -388,6 +414,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         },
         "subfinder_version": None,
         "errors": errors,
+        "warnings": [],
     }
 
     console.print(
@@ -411,8 +438,12 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     sf = check_subfinder()
     base["subfinder_version"] = sf.get("version")
+    for w in sf.get("check_warnings") or []:
+        base["warnings"].append(w)
     if not sf.get("available"):
         base["status"] = "not_installed"
+        err_msg = str(sf.get("error") or "subfinder binary not found")
+        errors.append(err_msg)
         console.print(Text("  [!] subfinder not found on this system", style=f"bold {C_ERR}"))
         inst = sf.get("install") or "go install ... subfinder@latest"
         console.print(Text(f"  [i] Install: {inst}", style=C_MUTED))
@@ -469,24 +500,14 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
 
     res_to = min(8, max(3, timeout_s // 60))
+    ip_map = resolve_many(
+        list(to_resolve),
+        timeout=int(res_to),
+        workers=RESOLVE_THREADS,
+    )
     ip_by_host: dict[str, str | None] = {}
-
-    with ThreadPoolExecutor(max_workers=RESOLVE_THREADS) as ex:
-        futs = {ex.submit(resolve_subdomain, h, res_to): h for h in to_resolve}
-        try:
-            for fut in as_completed(futs, timeout=float(timeout_s + 120)):
-                h = futs[fut]
-                hl = h.lower()
-                try:
-                    r = fut.result()
-                    ip_by_host[hl] = str(r["ip"]) if r and r.get("ip") else None
-                except Exception:  # noqa: BLE001
-                    ip_by_host[hl] = None
-        except TimeoutError:
-            errors.append("DNS resolution batch timed out — some IPs missing")
-            for h in to_resolve:
-                if h.lower() not in ip_by_host:
-                    ip_by_host[h.lower()] = None
+    for h in to_resolve:
+        ip_by_host[h.lower()] = ip_map.get(h)
 
     found_rows: list[dict[str, Any]] = []
     for h in raw_hosts:
@@ -684,5 +705,14 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             style=C_DIM,
         )
     )
+    if config.get("debug"):
+        st = cache_stats()
+        console.print(
+            Text(
+                f"     [DEBUG] DNS cache: {st['resolved']} resolved · "
+                f"{st['failed']} failed · {st['total']} total entries",
+                style=C_MUTED,
+            )
+        )
 
     return base

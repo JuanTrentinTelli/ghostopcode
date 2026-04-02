@@ -301,22 +301,35 @@ def word_variations(word: str) -> list[str]:
     return list(dict.fromkeys(variations))
 
 
-def _ntlm_hex(password: str) -> str | None:
+def _ntlm_hex(
+    password: str,
+    errors: list[str] | None = None,
+) -> str | None:
     """NTLM = MD4(UTF-16LE(password)); hex uppercase common."""
     try:
         if "md4" not in hashlib.algorithms_available:
             return None
         d = hashlib.new("md4", password.encode("utf-16le")).hexdigest()
         return d.lower()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if errors is not None:
+            errors.append(f"_ntlm_hex: {type(e).__name__}: {e}")
         return None
 
 
-def _digest_hex(password: str, hashlib_name: str) -> str | None:
+def _digest_hex(
+    password: str,
+    hashlib_name: str,
+    errors: list[str] | None = None,
+) -> str | None:
     try:
         h = hashlib.new(hashlib_name, password.encode("utf-8", errors="ignore"))
         return h.hexdigest().lower()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if errors is not None:
+            errors.append(
+                f"_digest_hex({hashlib_name}): {type(e).__name__}: {e}"
+            )
         return None
 
 
@@ -360,17 +373,18 @@ def _check_password_against_algorithms(
     password: str,
     target_lower: str,
     ordered_algos: list[str],
+    errors: list[str] | None = None,
 ) -> str | None:
     """Return algorithm name if any digest matches target (hex, lower)."""
     for alg in ordered_algos:
         meta = HASH_SIGNATURES.get(alg, {})
         lib = meta.get("hashlib")
         if lib:
-            d = _digest_hex(password, lib)
+            d = _digest_hex(password, lib, errors)
             if d and d == target_lower:
                 return alg
         if alg == "NTLM":
-            n = _ntlm_hex(password)
+            n = _ntlm_hex(password, errors)
             if n and n == target_lower:
                 return "NTLM"
     return None
@@ -427,7 +441,10 @@ def crack_local(
 
     try:
         total_lines = max(1, app_config.count_lines(str(wl_path)))
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        errors.append(
+            f"wordlist line count: {type(e).__name__}: {e} — using estimate"
+        )
         total_lines = 1
 
     wl_name = wl_path.name
@@ -466,7 +483,7 @@ def crack_local(
                     for var in word_variations(line):
                         attempts += 1
                         hit = _check_password_against_algorithms(
-                            var, target_lower, ordered
+                            var, target_lower, ordered, errors
                         )
                         if hit:
                             plaintext = var
@@ -684,7 +701,21 @@ def run_hash(hash_value: str, config: dict[str, Any]) -> dict[str, Any]:
     """
     Identify hash, optionally crack locally and/or with hashcat.
     Never raises; fills errors[] on failure paths.
+
+    RUN ALL sets ``config["run_all"]`` — this module needs interactive input,
+    so return skipped immediately (defense if invoked while batch mode is on).
     """
+    if config.get("run_all"):
+        return {
+            "module": "hash_module",
+            "target": str(config.get("session_target") or ""),
+            "status": "skipped",
+            "warnings": [
+                "Requires interactive input — select [9] individually when you have a hash to analyze."
+            ],
+            "skip_reason": "Requires interactive input — use [9] individually",
+        }
+
     t0 = time.perf_counter()
     errors: list[str] = []
     hv = (hash_value or "").strip()

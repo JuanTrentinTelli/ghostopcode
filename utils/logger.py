@@ -12,7 +12,55 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
+from utils.redact import redact_string
+
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+# Whole-line matches only — conservative (menu choices like "1" are not matched).
+SENSITIVE_INPUT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^CONFIRM$", re.IGNORECASE),
+    re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE),
+    re.compile(r"^\$2[aby]?\$\d+\$[./A-Za-z0-9]{53}$"),
+    re.compile(r"^[a-zA-Z0-9+/]{43}=$"),
+]
+
+_VULN_CONFIRM_PROMPT = "Type 'CONFIRM' to proceed with vuln scan:"
+
+
+def _is_sensitive_input_value(value: str) -> bool:
+    """True if stripped value matches a sensitive operator-input pattern."""
+    v = value.strip()
+    if not v:
+        return False
+    for pattern in SENSITIVE_INPUT_PATTERNS:
+        if pattern.match(v):
+            return True
+    return False
+
+
+_HASH_LINE = re.compile(r"^\[HASH\]\s+\S")
+_HASH_SUMMARY = re.compile(r"^Hash\s*:\s*\S")
+_PLAINTEXT_SUMMARY = re.compile(r"^Plaintext\s*:\s*\S")
+
+
+def _redact_tty_line_if_needed(plain_line: str) -> str:
+    """
+    Replace echoed prompts / operator lines that must not persist in session.log.
+    """
+    s = plain_line.strip()
+    if not s:
+        return plain_line
+    if _VULN_CONFIRM_PROMPT in s:
+        return "[prompt redacted: vuln scan authorization]"
+    if _is_sensitive_input_value(s):
+        return "[operator input redacted]"
+    if _HASH_LINE.match(s):
+        return "[HASH] [value redacted from session log mirror]"
+    if _HASH_SUMMARY.match(s):
+        return "Hash      : [redacted]"
+    if _PLAINTEXT_SUMMARY.match(s):
+        return "Plaintext : [redacted]"
+    return plain_line
 
 
 def _strip_ansi(text: str) -> str:
@@ -92,7 +140,9 @@ class SessionLogger:
         clean = _strip_ansi(plain_line).strip()
         if not clean:
             return
-        entry = f"[{ts}] [TTY] {clean}\n"
+        clean = _redact_tty_line_if_needed(clean)
+        redacted = redact_string(clean)
+        entry = f"[{ts}] [TTY] {redacted}\n"
         with self._lock:
             self._open_append()
             assert self._file is not None
@@ -103,13 +153,48 @@ class SessionLogger:
         """Thread-safe log line — file stays open."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         clean_msg = _strip_ansi(message)
-        entry = f"[{timestamp}] [{level}] {clean_msg}\n"
+        redacted_msg = redact_string(clean_msg)
+        entry = f"[{timestamp}] [{level}] {redacted_msg}\n"
         self.entries.append(entry.rstrip("\n"))
         with self._lock:
             self._open_append()
             assert self._file is not None
             self._file.write(entry)
             self._file.flush()
+
+    def _is_sensitive_input(self, value: str) -> bool:
+        """Conservative match for operator-typed secrets (used by log_operator_action)."""
+        return _is_sensitive_input_value(value)
+
+    def log_operator_action(
+        self,
+        action: str,
+        value: str,
+        redact: bool = False,
+        placeholder: str = "[operator input]",
+    ) -> None:
+        """
+        Log what the operator did without persisting raw sensitive input.
+
+        Never raises — logging is best-effort and must not break the main flow.
+        """
+        try:
+            vs = (value or "").strip()
+            if redact:
+                log_value = placeholder if vs else "[empty input]"
+            else:
+                if not vs:
+                    if placeholder == "":
+                        self.log(action, level="OPERATOR")
+                        return
+                    log_value = "[empty input]"
+                elif self._is_sensitive_input(vs):
+                    log_value = placeholder or "[operator input]"
+                else:
+                    log_value = vs
+            self.log(f"{action}: {log_value}", level="OPERATOR")
+        except Exception:  # noqa: BLE001 — best-effort audit line
+            pass
 
     def write_header(self, target: str, modules: list[str]) -> None:
         """Start a fresh log file with session header."""

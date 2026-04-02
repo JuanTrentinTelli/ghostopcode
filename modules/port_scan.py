@@ -9,6 +9,7 @@ import shutil
 import socket
 import ssl
 import struct
+import sys
 import threading
 import time
 from collections import deque
@@ -30,6 +31,8 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT
+from utils.base_module import make_finding
+from utils.dns_cache import resolve as dns_resolve
 from utils.output import debug_log, display_findings
 from utils.target_parser import Target
 
@@ -46,6 +49,232 @@ C_MUTED = "#4A5A62"
 C_ACCENT = "#8B9CA8"
 
 console = Console(highlight=False, force_terminal=True)
+
+# nmap phase-2 intensity (phase 1 TCP unchanged)
+NMAP_LEVELS: dict[int, dict[str, Any]] = {
+    1: {
+        "name": "Standard",
+        "args": "-sV -T4 --version-intensity 5",
+        "label": "-sV only",
+        "note": "Service and version detection",
+        "risk": "LOW",
+        "timeout_multiplier": 1,
+    },
+    2: {
+        "name": "Enhanced",
+        "args": "-sV -sC -T4 --version-intensity 7",
+        "label": "-sV -sC (default scripts)",
+        "note": "Version + default NSE scripts",
+        "risk": "LOW",
+        "timeout_multiplier": 3,
+    },
+    3: {
+        "name": "Vuln scan",
+        "args": "-sV -sC --script vuln -T4",
+        "label": "--script vuln",
+        "note": "Active vulnerability detection",
+        "risk": "HIGH",
+        "timeout_multiplier": 8,
+    },
+}
+
+SCRIPT_CATEGORIES: dict[str, dict[str, str]] = {
+    "http-title": {"risk": "INFO", "note": "Page title"},
+    "http-server-header": {"risk": "INFO", "note": "Server header"},
+    "ssl-cert": {"risk": "INFO", "note": "SSL certificate details"},
+    "ssh-hostkey": {"risk": "INFO", "note": "SSH host key fingerprint"},
+    "http-auth-info": {"risk": "MEDIUM", "note": "HTTP auth methods exposed"},
+    "ftp-anon": {"risk": "HIGH", "note": "Anonymous FTP login allowed"},
+    "smb-security-mode": {"risk": "MEDIUM", "note": "SMB security configuration"},
+    "rdp-enum-encryption": {"risk": "MEDIUM", "note": "RDP encryption settings"},
+    "ms17-010": {"risk": "CRITICAL", "note": "EternalBlue — WannaCry vector"},
+    "http-shellshock": {"risk": "CRITICAL", "note": "Shellshock RCE vulnerability"},
+    "ssl-heartbleed": {"risk": "CRITICAL", "note": "Heartbleed — SSL memory leak"},
+    "http-vuln-cve2017-5638": {
+        "risk": "CRITICAL",
+        "note": "Apache Struts RCE",
+    },
+    "smb-vuln-ms08-067": {"risk": "CRITICAL", "note": "Conficker vulnerability"},
+    "ftp-vsftpd-backdoor": {"risk": "CRITICAL", "note": "vsftpd 2.3.4 backdoor"},
+    "http-slowloris-check": {"risk": "HIGH", "note": "Slowloris DoS vulnerability"},
+    "smtp-vuln-cve2010-4344": {"risk": "HIGH", "note": "Exim heap overflow"},
+    "mysql-vuln-cve2012-2122": {"risk": "CRITICAL", "note": "MySQL auth bypass"},
+}
+
+
+def describe_nmap_level_for_summary(level: int) -> str:
+    """One line for MISSION SUMMARY / config echo."""
+    c = NMAP_LEVELS.get(int(level), NMAP_LEVELS[1])
+    return f"{c['name']} ({c['label']})"
+
+
+def extract_script_output(port_data: dict[str, Any]) -> dict[str, str]:
+    """
+    NSE script id → output. Drops empty / trivial lines.
+    """
+    raw = port_data.get("script")
+    if raw is None or not isinstance(raw, dict):
+        return {}
+    results: dict[str, str] = {}
+    for script_name, output in raw.items():
+        if output is None:
+            continue
+        out = str(output).strip()
+        if not out or out.upper() in ("N/A", "ERROR"):
+            continue
+        if len(out) < 5:
+            continue
+        results[str(script_name)] = out
+    return results
+
+
+def _cve_guess_from_script_output(text: str) -> str:
+    m = re.search(r"CVE-\d{4}-\d+", text, re.I)
+    return m.group(0).upper() if m else ""
+
+
+def _script_findings_from_nmap_map(
+    nmap_map: dict[int, dict[str, Any]],
+    nmap_level: int,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, dict[str, str]],
+    list[dict[str, Any]],
+]:
+    """
+    Build tier findings + script_hits + vuln_hits (vuln_hits only for level 3).
+    """
+    critical: list[dict[str, Any]] = []
+    high: list[dict[str, Any]] = []
+    medium: list[dict[str, Any]] = []
+    low: list[dict[str, Any]] = []
+    info_low: list[dict[str, Any]] = []
+    script_hits: dict[str, dict[str, str]] = {}
+    vuln_hits: list[dict[str, Any]] = []
+    vuln_seen: set[tuple[int, str]] = set()
+
+    for port, info in sorted(nmap_map.items()):
+        scripts = info.get("script_outputs") or {}
+        if not scripts:
+            continue
+        script_hits[str(port)] = dict(scripts)
+        svc = (info.get("name") or info.get("product") or "tcp").strip() or "tcp"
+        for script_name, output in scripts.items():
+            meta = SCRIPT_CATEGORIES.get(script_name, {})
+            risk = str(meta.get("risk", "MEDIUM")).upper()
+            note_base = str(meta.get("note", script_name))
+            cve_guess = _cve_guess_from_script_output(output)
+            if risk == "INFO":
+                risk = "LOW"
+
+            finding = make_finding(
+                value=f"{port}/{svc} — {script_name}",
+                category=f"nmap_script_{script_name}",
+                risk=risk,
+                note=f"{note_base}: {output[:200]}{'…' if len(output) > 200 else ''}",
+                metadata={
+                    "port": port,
+                    "script": script_name,
+                    "output": output,
+                    "nmap_level": nmap_level,
+                    "cve": cve_guess or None,
+                },
+            )
+            if risk == "CRITICAL":
+                critical.append(finding)
+            elif risk == "HIGH":
+                high.append(finding)
+            elif risk == "MEDIUM":
+                medium.append(finding)
+            else:
+                low.append(finding)
+
+            if nmap_level == 3 and (
+                risk in ("CRITICAL", "HIGH")
+                or "vuln" in script_name.lower()
+                or "vulnerable" in output.lower()
+            ):
+                vk = (port, script_name)
+                if vk not in vuln_seen:
+                    vuln_seen.add(vk)
+                    vuln_hits.append(
+                        {
+                            "port": port,
+                            "script": script_name,
+                            "output": output[:2000],
+                            "cve": cve_guess or None,
+                            "risk": risk
+                            if risk in ("CRITICAL", "HIGH")
+                            else "HIGH",
+                        }
+                    )
+
+    return critical, high, medium, low, script_hits, vuln_hits
+
+
+def _confirm_vuln_scan(config: dict[str, Any]) -> bool:
+    """Return True if operator typed CONFIRM; log action (not literal input) to session."""
+    console.print()
+    console.print(Text(" [!!!] VULN SCAN WARNING", style="bold red"))
+    console.print(
+        Text(
+            "   · Active vulnerability scripts will run against the target",
+            style=C_WARN,
+        )
+    )
+    console.print(
+        Text(
+            "   · Some scripts may trigger IDS/IPS alerts",
+            style=C_WARN,
+        )
+    )
+    console.print(
+        Text(
+            "   · Some scripts may cause instability in fragile services",
+            style=C_WARN,
+        )
+    )
+    console.print(
+        Text(
+            "   · Only use on targets you have explicit written authorization",
+            style=C_WARN,
+        )
+    )
+    console.print()
+    logger = config.get("session_logger")
+    log_op = getattr(logger, "log_operator_action", None) if logger is not None else None
+    try:
+        confirm = input("  Type 'CONFIRM' to proceed with vuln scan: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        if callable(log_op):
+            log_op(
+                "Vuln scan declined",
+                "",
+                redact=False,
+                placeholder="",
+            )
+        return False
+    if confirm == "CONFIRM":
+        if callable(log_op):
+            log_op(
+                "Vuln scan authorized",
+                confirm,
+                redact=True,
+                placeholder="[operator confirmed vuln scan]",
+            )
+        return True
+    if callable(log_op):
+        log_op(
+            "Vuln scan declined",
+            "",
+            redact=False,
+            placeholder="",
+        )
+    return False
+
 
 # Preset: aggressive surface map (deduped, order preserved)
 _PORT_COMMON_ORDERED: list[int] = [
@@ -398,7 +627,13 @@ def parse_ports(ports_arg: str) -> list[int]:
     return list(PORT_PRESETS["common"])
 
 
-def tcp_connect(host: str, port: int, timeout: float) -> bool:
+def tcp_connect(
+    host: str,
+    port: int,
+    timeout: float,
+    errors: list[str] | None = None,
+    err_kinds: set[str] | None = None,
+) -> bool:
     """
     Attempt TCP connection to host:port.
     Returns True if port is open, False otherwise.
@@ -412,7 +647,14 @@ def tcp_connect(host: str, port: int, timeout: float) -> bool:
         return code == 0
     except OSError:
         return False
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if errors is not None and err_kinds is not None:
+            k = type(e).__name__
+            if k not in err_kinds:
+                err_kinds.add(k)
+                errors.append(
+                    f"tcp_connect ({k}): {e} — further {k} omitted"
+                )
         return False
     finally:
         if sock is not None:
@@ -441,7 +683,13 @@ def _postgres_ssl_request() -> bytes:
     return struct.pack(">II", 8, 80877103)
 
 
-def grab_banner(host: str, port: int, timeout: float) -> str | None:
+def grab_banner(
+    host: str,
+    port: int,
+    timeout: float,
+    errors: list[str] | None = None,
+    err_kinds: set[str] | None = None,
+) -> str | None:
     """
     Attempt to grab service banner from an open port.
     Tries passive recv, then port-specific probes, TLS for HTTPS-like ports.
@@ -506,7 +754,14 @@ def grab_banner(host: str, port: int, timeout: float) -> str | None:
 
         raw = b"".join(chunks)[:16000]
         return raw.decode("latin-1", errors="replace")
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if errors is not None and err_kinds is not None:
+            k = type(e).__name__
+            if k not in err_kinds:
+                err_kinds.add(k)
+                errors.append(
+                    f"grab_banner {host}:{port} ({k}): {e} — further {k} omitted"
+                )
         return None
     finally:
         if sock is not None:
@@ -706,12 +961,15 @@ def run_nmap_service_detection(
     host: str,
     open_ports: list[int],
     timeout: int,
+    nmap_level: int = 1,
     verbose: bool = False,
     config: dict[str, Any] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """
-    Run nmap -sV on discovered open ports only (phase 2).
-    Returns port → {name, product, version, extrainfo, state, cpe}.
+    Phase 2: nmap on open ports only. Levels:
+    1 Standard (-sV), 2 Enhanced (-sV -sC), 3 Vuln (--script vuln).
+
+    Returns port → service fields + script_outputs (NSE dict).
     Never raises; empty dict if nmap missing or scan fails.
     """
     out: dict[int, dict[str, Any]] = {}
@@ -720,15 +978,16 @@ def run_nmap_service_detection(
     if shutil.which("nmap") is None:
         return out
 
+    level_cfg = NMAP_LEVELS.get(int(nmap_level), NMAP_LEVELS[1])
+    mult = int(level_cfg.get("timeout_multiplier") or 1)
     ports_str = ",".join(str(p) for p in sorted(set(open_ports)))
-    host_timeout = max(60, len(open_ports) * 5)
-    nmap_args = (
-        f"-sV -T4 --version-intensity 5 --open "
-        f"--host-timeout {host_timeout}s"
-    )
+    host_timeout = max(60, len(open_ports) * 5 * mult)
+    core = str(level_cfg.get("args") or "-sV -T4 --version-intensity 5")
+    nmap_args = f"{core} --open --host-timeout {host_timeout}s"
+
     debug_log(
         "subprocess",
-        detail=f"nmap -sV -T4 -p {ports_str} {host} (python-nmap)",
+        detail=f"nmap {core} -p {ports_str} {host} --host-timeout {host_timeout}s",
         config=config,
     )
     t_nm = time.perf_counter()
@@ -742,14 +1001,14 @@ def run_nmap_service_detection(
     except Exception as e:  # noqa: BLE001
         debug_log(
             "subprocess",
-            detail="nmap -sV",
+            detail="nmap scan",
             result=f"failed: {type(e).__name__}: {e!s}"[:180],
             elapsed=time.perf_counter() - t_nm,
             config=config,
         )
         if verbose:
             console.print(
-                Text(f" [WARN] nmap -sV failed: {e}", style=C_WARN),
+                Text(f" [WARN] nmap failed: {e}", style=C_WARN),
             )
         return out
 
@@ -775,6 +1034,7 @@ def run_nmap_service_detection(
                 version = str(port_data.get("version") or "")
                 extrainfo = str(port_data.get("extrainfo") or "")
                 cpe = _nmap_cpe_field(port_data)
+                script_outputs = extract_script_output(port_data)
                 out[pi] = {
                     "name": name,
                     "product": product,
@@ -782,24 +1042,25 @@ def run_nmap_service_detection(
                     "extrainfo": extrainfo,
                     "state": str(port_data.get("state") or ""),
                     "cpe": cpe,
+                    "script_outputs": script_outputs,
                 }
     except Exception as e:  # noqa: BLE001
         debug_log(
             "subprocess",
-            detail="nmap -sV parse",
+            detail="nmap parse",
             result=f"error: {type(e).__name__}",
             elapsed=time.perf_counter() - t_nm,
             config=config,
         )
         if verbose:
             console.print(
-                Text(f" [WARN] nmap -sV parse error: {e}", style=C_WARN),
+                Text(f" [WARN] nmap parse error: {e}", style=C_WARN),
             )
         return out
 
     debug_log(
         "subprocess",
-        detail="nmap -sV complete",
+        detail="nmap scan complete",
         result=f"{len(out)} port(s) fingerprinted",
         elapsed=time.perf_counter() - t_nm,
         config=config,
@@ -1060,6 +1321,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     verbose = bool(config.get("verbose", False))
     quiet = bool(config.get("quiet", False))
     ports_arg = str(config.get("ports_range") or "common")
+    nmap_level = max(1, min(3, int(config.get("nmap_level") or 1)))
 
     base: dict[str, Any] = {
         "module": "port_scan",
@@ -1094,20 +1356,19 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["error"] = base["errors"][-1]
         return base
 
-    host_ip = ""
-    try:
-        host_ip = socket.gethostbyname(target.value)
-    except socket.gaierror as e:
+    dns_timeout = max(3, int(config.get("timeout") or 10))
+    host_ip = dns_resolve(
+        target.value.strip(),
+        timeout=dns_timeout,
+        config=config,
+    )
+    if not host_ip:
         base["status"] = "error"
-        base["error"] = f"DNS resolution failed: {e}"
-        base["errors"].append(base["error"])
+        msg = f"DNS resolution failed for {target.value!s}"
+        base["error"] = msg
+        base["errors"].append(msg)
         _render_header(target.value, len(ports))
-        console.print(Text(f"  [✗] {base['error']}", style=C_ERR))
-        return base
-    except OSError as e:
-        base["status"] = "error"
-        base["error"] = str(e)
-        base["errors"].append(str(e))
+        console.print(Text(f"  [✗] {msg}", style=C_ERR))
         return base
 
     base["host_ip"] = host_ip
@@ -1129,6 +1390,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     recent_open: deque[str] = deque(maxlen=14)
     window: deque[float] = deque()
     interrupted = False
+    worker_exc_kinds: set[str] = set()
+    tcp_exc_kinds: set[str] = set()
 
     def record_done() -> None:
         nonlocal done_count
@@ -1148,7 +1411,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     def worker(port: int) -> None:
         try:
-            if tcp_connect(host_ip, port, timeout):
+            if tcp_connect(
+                host_ip,
+                port,
+                timeout,
+                base["errors"],
+                tcp_exc_kinds,
+            ):
                 on_open(port)
         finally:
             record_done()
@@ -1221,9 +1490,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                         try:
                             fut.result()
                         except Exception as e:  # noqa: BLE001
-                            if verbose:
-                                with lock:
-                                    base["errors"].append(str(e))
+                            k = type(e).__name__
+                            with lock:
+                                if k not in worker_exc_kinds:
+                                    worker_exc_kinds.add(k)
+                                    base["errors"].append(
+                                        f"TCP scan worker ({k}): {e} — further {k} omitted"
+                                    )
                         submit_batch(executor)
                 else:
                     submit_batch(executor)
@@ -1263,8 +1536,15 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     )
 
     # Banner phase (sequential — fewer sockets; avoids stampeding target)
+    banner_exc_kinds: set[str] = set()
     for p in open_sorted:
-        b = grab_banner(host_ip, p, min(timeout, 4.0))
+        b = grab_banner(
+            host_ip,
+            p,
+            min(timeout, 4.0),
+            base["errors"],
+            banner_exc_kinds,
+        )
         banners[p] = b
 
     nmap_map: dict[int, dict[str, Any]] = {}
@@ -1272,6 +1552,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     base["nmap_python_available"] = nmap is not None
     base["nmap_sV_used"] = False
     base["nmap_service_detection"] = {}
+    base["nmap_level"] = nmap_level
+    base["script_hits"] = {}
+    base["vuln_hits"] = []
+    lvl_cfg = NMAP_LEVELS[nmap_level]
+    mult = int(lvl_cfg.get("timeout_multiplier") or 1)
+    host_timeout_n = max(60, len(open_sorted) * 5 * mult) if open_sorted else 60
+    base["nmap_args"] = f"{lvl_cfg['args']} --open --host-timeout {host_timeout_n}s"
 
     if open_sorted:
         if nmap is None:
@@ -1292,19 +1579,43 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 Text(" [i] Install: sudo apt install nmap", style=C_MUTED),
             )
         else:
+            run_level = nmap_level
+            if run_level == 3:
+                if not sys.stdin.isatty() or not _confirm_vuln_scan(config):
+                    console.print(
+                        Text(
+                            " [i] Vuln scan cancelled — falling back to Enhanced (-sV -sC)",
+                            style=C_MUTED,
+                        )
+                    )
+                    run_level = 2
+                    config["nmap_level"] = 2
+                    nmap_level = 2
+                    base["nmap_level"] = 2
+                    lvl_cfg = NMAP_LEVELS[2]
+                    mult = int(lvl_cfg.get("timeout_multiplier") or 1)
+                    host_timeout_n = max(60, len(open_sorted) * 5 * mult)
+                    base["nmap_args"] = (
+                        f"{lvl_cfg['args']} --open --host-timeout {host_timeout_n}s"
+                    )
+
             console.print()
             console.print(
                 Text(
-                    f" [SCAN] Phase 2 — nmap -sV on {len(open_sorted)} open port(s)",
+                    f" [SCAN] Phase 2 — nmap ({lvl_cfg['name']}) · "
+                    f"{len(open_sorted)} open port(s)",
                     style=f"bold {C_PRI}",
                 )
             )
             if not quiet:
-                console.print(Text(" [►] Identifying services…", style=C_DIM))
+                console.print(
+                    Text(f" [►] {lvl_cfg['note']} — {lvl_cfg['label']}", style=C_DIM)
+                )
             nmap_map = run_nmap_service_detection(
                 host_ip,
                 open_sorted,
                 int(max(1, timeout)),
+                run_level,
                 verbose,
                 config,
             )
@@ -1312,10 +1623,35 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             base["nmap_service_detection"] = {
                 str(k): v for k, v in nmap_map.items()
             }
+
+            (
+                scr_crit,
+                scr_high,
+                scr_med,
+                scr_low,
+                script_hits,
+                vuln_hits,
+            ) = _script_findings_from_nmap_map(nmap_map, run_level)
+            base["script_hits"] = script_hits
+            base["vuln_hits"] = vuln_hits
+
+            def _merge_findings(key: str, items: list[dict[str, Any]]) -> None:
+                if not items:
+                    return
+                cur = list(base.get(key) or [])
+                cur.extend(items)
+                base[key] = cur
+
+            _merge_findings("critical_findings", scr_crit)
+            _merge_findings("high_findings", scr_high)
+            _merge_findings("medium_findings", scr_med)
+            _merge_findings("low_findings", scr_low)
+
+            done_lbl = f"nmap {lvl_cfg['label']}"
             console.print()
             console.print(
                 Text(
-                    " [✓] Service detection complete (nmap -sV)",
+                    f" [✓] Service detection complete ({done_lbl})",
                     style=f"bold {C_PRI}",
                 )
             )
@@ -1337,13 +1673,53 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                         )
                         console.print(
                             Text.assemble(
-                                ("     ", C_MUTED),
-                                (f"{p}", C_DIM),
-                                (" → ", C_MUTED),
-                                (f"{label[:46]:<46}", C_PRI),
-                                (f" ({svc_disp})", C_MUTED),
+                                (" [+] ", C_PRI),
+                                (f"{p}/{svc_disp}", C_DIM),
+                                ("    ", C_MUTED),
+                                (label[:46], C_PRI),
                             )
                         )
+                        scripts = info.get("script_outputs") or {}
+                        for sn, sout in list(scripts.items())[:16]:
+                            one = sout.replace("\r", " ").replace("\n", " ").strip()
+                            if len(one) > 82:
+                                one = one[:79] + "…"
+                            meta = SCRIPT_CATEGORIES.get(sn, {})
+                            rk = str(meta.get("risk", "")).upper()
+                            st = C_MUTED
+                            if rk == "CRITICAL":
+                                st = C_ERR
+                            elif rk == "HIGH":
+                                st = C_WARN
+                            elif rk == "MEDIUM":
+                                st = C_WARN
+                            extra_tag = f" [{rk}]" if rk and rk != "INFO" else ""
+                            console.print(
+                                Text(
+                                    f"     └─ {sn}: {one}{extra_tag}",
+                                    style=st,
+                                )
+                            )
+                        if run_level == 3:
+                            for sn, sout in scripts.items():
+                                meta = SCRIPT_CATEGORIES.get(sn, {})
+                                if str(meta.get("risk")) != "CRITICAL" and (
+                                    "vulnerable" not in sout.lower()
+                                ):
+                                    continue
+                                console.print(
+                                    Text.assemble(
+                                        (" [!!!] CRITICAL — ", f"bold {C_ERR}"),
+                                        (f"{sn}", C_ERR),
+                                        (" — ", C_MUTED),
+                                        (f"{p}/{svc_disp}", C_DIM),
+                                    )
+                                )
+                                for chunk in sout.replace("\r", "\n").split("\n")[:4]:
+                                    if chunk.strip():
+                                        console.print(
+                                            Text(f"       {chunk.strip()[:100]}", C_MUTED)
+                                        )
                     else:
                         console.print(
                             Text.assemble(
@@ -1379,6 +1755,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             "nmap_sV": False,
         }
         _apply_nmap_to_port_row(p, row, nmap_map.get(p), verbose)
+        nmi = nmap_map.get(p)
+        if nmi and (nmi.get("script_outputs") or {}):
+            row["nmap_script_outputs"] = dict(nmi["script_outputs"])
         if row["service"] in {"MySQL", "PostgreSQL", "MongoDB", "Redis"} and p in {
             3306,
             5432,
@@ -1491,7 +1870,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             ),
             (f"     Speed     : {base['stats']['req_per_sec']} req/s\n", C_DIM),
             (
-                f"     nmap -sV  : {len(nmap_map)}/{n_open} ports fingerprinted\n",
+                f"     nmap      : {NMAP_LEVELS.get(nmap_level, NMAP_LEVELS[1])['name']} · "
+                f"{len(nmap_map)}/{n_open} fingerprinted\n",
                 C_DIM,
             ),
             (f"     Duration  : {base['stats']['duration_s']}s", C_DIM),

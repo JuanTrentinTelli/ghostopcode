@@ -5,7 +5,6 @@ GhostOpcode WAF / CDN / edge protection detection — passive headers, active pr
 from __future__ import annotations
 
 import time
-import urllib3
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -16,11 +15,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from config import DEFAULT_TIMEOUT, USER_AGENT
-from modules.http_methods import resolve_base_url
+from utils.http_client import make_session, resolve_base_url, session_get
 from utils.output import debug_log
 from utils.target_parser import Target
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 C_PRI = "#00FF41"
 C_DIM = "#6F7F86"
@@ -258,20 +255,29 @@ def _header_matches(rule_val: Any, actual: str) -> bool:
     return False
 
 
-def _collect_cookie_blob(resp: requests.Response) -> str:
+def _collect_cookie_blob(
+    resp: requests.Response,
+    warnings: list[str] | None = None,
+) -> str:
     parts: list[str] = []
     try:
         for c in resp.cookies:
             parts.append(f"{c.name}={c.value}")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None:
+            warnings.append(
+                f"WAF passive: cookie jar iteration failed: {type(e).__name__}: {e}"
+            )
     sc = resp.headers.get("Set-Cookie") or ""
     if sc:
         parts.append(sc)
     return " ".join(parts).lower()
 
 
-def passive_header_analysis(resp: requests.Response) -> tuple[dict[str, Any] | None, list[str]]:
+def passive_header_analysis(
+    resp: requests.Response,
+    warnings: list[str] | None = None,
+) -> tuple[dict[str, Any] | None, list[str]]:
     """
     Match response headers, cookies, and body against known WAF/CDN signatures.
 
@@ -280,7 +286,7 @@ def passive_header_analysis(resp: requests.Response) -> tuple[dict[str, Any] | N
     lines: list[str] = []
     best: tuple[int, str, dict[str, Any], list[str]] | None = None
     body_lower = (resp.text or "")[:80000].lower()
-    cookie_blob = _collect_cookie_blob(resp)
+    cookie_blob = _collect_cookie_blob(resp, warnings)
     hdrs = {k.lower(): v for k, v in resp.headers.items()}
 
     for name, sig in WAF_SIGNATURES.items():
@@ -338,6 +344,7 @@ def analyze_probe_response(
     normal_resp: requests.Response,
     probe_resp: requests.Response,
     probe: dict[str, Any],
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Compare baseline response to a probe response for block indicators.
@@ -373,7 +380,11 @@ def analyze_probe_response(
         n_len = max(len(normal_resp.content or b""), 1)
         p_len = len(probe_resp.content or b"")
         short_error_like = p_len < 8000 and p_len < n_len * 0.35
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None:
+            warnings.append(
+                f"WAF probe body metric ({probe.get('name')}): {type(e).__name__}: {e}"
+            )
         short_error_like = False
 
     body_lower = (probe_resp.text or "")[:120000].lower()
@@ -412,8 +423,12 @@ def analyze_probe_response(
                     "confidence": "LOW",
                 }
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None:
+            warnings.append(
+                f"WAF probe size-drop hint ({probe.get('name')}): "
+                f"{type(e).__name__}: {e}"
+            )
 
     return {
         "probe": probe["name"],
@@ -432,7 +447,14 @@ def _build_probe_url(base_url: str, probe: dict[str, Any]) -> str:
     return f"{root}/{payload.lstrip('/')}"
 
 
-def timing_analysis(base_url: str, timeout: int) -> dict[str, Any]:
+def timing_analysis(
+    base_url: str,
+    timeout: int,
+    session: requests.Session,
+    config: dict[str, Any],
+    ssl_warnings: list[str],
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Compare average latency for benign vs suspicious GET requests.
 
@@ -442,34 +464,72 @@ def timing_analysis(base_url: str, timeout: int) -> dict[str, Any]:
     probe_url = root.rstrip("/") + "?id=1'OR'1'='1"
 
     normal_times: list[float] = []
+    norm_timeout_noted = False
+    norm_other_noted = False
     for _ in range(3):
         try:
             t0 = time.perf_counter()
-            requests.get(
+            r = session_get(
+                session,
                 root,
+                config,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(),
+                ssl_warnings=ssl_warnings,
             )
-            normal_times.append(time.perf_counter() - t0)
-        except Exception:  # noqa: BLE001
+            if r is None:
+                normal_times.append(float(timeout))
+            else:
+                normal_times.append(time.perf_counter() - t0)
+        except requests.exceptions.Timeout:
             normal_times.append(float(timeout))
+            if warnings is not None and not norm_timeout_noted:
+                norm_timeout_noted = True
+                warnings.append(
+                    "WAF timing: baseline request(s) timed out — samples use full timeout budget"
+                )
+        except Exception as e:  # noqa: BLE001
+            normal_times.append(float(timeout))
+            if warnings is not None and not norm_other_noted:
+                norm_other_noted = True
+                warnings.append(
+                    f"WAF timing baseline request failed: {type(e).__name__}: {e}"
+                )
 
     probe_times: list[float] = []
+    probe_timeout_noted = False
+    probe_other_noted = False
     for _ in range(3):
         try:
             t0 = time.perf_counter()
-            requests.get(
+            r = session_get(
+                session,
                 probe_url,
+                config,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(),
+                ssl_warnings=ssl_warnings,
             )
-            probe_times.append(time.perf_counter() - t0)
-        except Exception:  # noqa: BLE001
+            if r is None:
+                probe_times.append(float(timeout))
+            else:
+                probe_times.append(time.perf_counter() - t0)
+        except requests.exceptions.Timeout:
             probe_times.append(float(timeout))
+            if warnings is not None and not probe_timeout_noted:
+                probe_timeout_noted = True
+                warnings.append(
+                    "WAF timing: suspicious probe request(s) timed out — delay estimate may be skewed"
+                )
+        except Exception as e:  # noqa: BLE001
+            probe_times.append(float(timeout))
+            if warnings is not None and not probe_other_noted:
+                probe_other_noted = True
+                warnings.append(
+                    f"WAF timing probe request failed: {type(e).__name__}: {e}"
+                )
 
     avg_normal = sum(normal_times) / max(len(normal_times), 1)
     avg_probe = sum(probe_times) / max(len(probe_times), 1)
@@ -582,6 +642,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "no_waf_detected": False,
         "passive_evidence": [],
         "errors": errors,
+        "warnings": [],
     }
 
     if target.is_cidr():
@@ -592,9 +653,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
         return out
 
+    http_session = make_session(config)
+    ssl_notes: list[str] = []
+
     base_url: str | None = None
     try:
-        base_url = resolve_base_url(target, float(timeout))
+        base_url = resolve_base_url(
+            target,
+            float(timeout),
+            config,
+            ssl_warnings=ssl_notes,
+        )
     except Exception as e:  # noqa: BLE001
         errors.append(f"resolve_base_url: {e}")
 
@@ -604,6 +673,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         console.print(
             Text("  [!] Could not reach target over HTTP/HTTPS", style=f"bold {C_ERR}")
         )
+        errors.extend(ssl_notes)
         return out
 
     out["base_url"] = base_url
@@ -616,13 +686,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     debug_log("http", detail=f"GET {baseline_url} (WAF baseline)", config=config)
     t_bl = time.perf_counter()
     try:
-        normal_resp = requests.get(
+        normal_resp = session_get(
+            http_session,
             baseline_url,
+            config,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
+            ssl_warnings=ssl_notes,
         )
+        if normal_resp is None:
+            raise RuntimeError("baseline GET failed (SSL or connection)")
         debug_log(
             "http",
             detail="WAF baseline response",
@@ -632,6 +706,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     except Exception as e:  # noqa: BLE001
         errors.append(f"baseline GET: {e}")
+        errors.extend(ssl_notes)
         debug_log(
             "http",
             detail="WAF baseline",
@@ -643,7 +718,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         console.print(Text(f"  [!] Baseline request failed: {e}", style=f"bold {C_ERR}"))
         return out
 
-    passive_waf, passive_lines = passive_header_analysis(normal_resp)
+    passive_waf, passive_lines = passive_header_analysis(
+        normal_resp, out["warnings"]
+    )
     out["passive_evidence"] = passive_lines
     if passive_waf:
         out["detection_methods"]["passive_headers"] = True
@@ -665,14 +742,20 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
         t_pr = time.perf_counter()
         try:
-            pr = requests.get(
+            pr = session_get(
+                http_session,
                 url,
+                config,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(extra_headers),
+                ssl_warnings=ssl_notes,
             )
-            analysis = analyze_probe_response(normal_resp, pr, probe)
+            if pr is None:
+                raise RuntimeError("probe GET failed (SSL or connection)")
+            analysis = analyze_probe_response(
+                normal_resp, pr, probe, out["warnings"]
+            )
             blocked = bool(analysis.get("blocked"))
             if blocked:
                 blocked_count += 1
@@ -697,8 +780,25 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     "indicators": analysis.get("indicators", []),
                 }
             )
+        except requests.exceptions.Timeout:
+            out["warnings"].append(f"WAF probe timeout: {probe['name']}")
+            debug_log(
+                "http",
+                detail=f"WAF probe [{probe['name']}]",
+                result="timeout",
+                elapsed=time.perf_counter() - t_pr,
+                config=config,
+            )
+            probe_summaries.append(
+                {
+                    "probe": probe["name"],
+                    "blocked": False,
+                    "status": None,
+                    "error": "timeout",
+                }
+            )
         except Exception as e:  # noqa: BLE001
-            err = f"{probe['name']}: {e}"
+            err = f"WAF probe failed ({probe['name']}): {type(e).__name__}: {e}"
             errors.append(err)
             debug_log(
                 "http",
@@ -722,7 +822,14 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     timing: dict[str, Any] = {}
     try:
-        timing = timing_analysis(base_url, timeout)
+        timing = timing_analysis(
+            base_url,
+            timeout,
+            http_session,
+            config,
+            ssl_notes,
+            out["warnings"],
+        )
         out["timing"] = timing
         out["detection_methods"]["timing"] = True
     except Exception as e:  # noqa: BLE001
@@ -865,6 +972,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     if verbose and passive_lines:
         console.print(Text(f"\n [verbose] {len(passive_lines)} passive signals", style=C_MUTED))
 
+    errors.extend(ssl_notes)
     return out
 
 

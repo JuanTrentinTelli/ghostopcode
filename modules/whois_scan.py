@@ -15,7 +15,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
-import urllib3
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -23,10 +22,9 @@ from rich.text import Text
 
 import whois
 from config import DEFAULT_TIMEOUT, USER_AGENT
+from utils.http_client import make_session, report_ssl_certificate_problem
 from utils.output import debug_log
 from utils.target_parser import Target
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 try:
     from ipwhois import IPWhois
@@ -145,10 +143,17 @@ def _normalize_whois_date(val: Any) -> datetime | None:
     return None
 
 
-def _flatten_whois_blob(w: Any) -> str:
+def _flatten_whois_blob(
+    w: Any,
+    diagnostics: list[str] | None = None,
+) -> str:
     try:
         return str(w).lower()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if diagnostics is not None:
+            diagnostics.append(
+                f"_flatten_whois_blob: {type(e).__name__}: {e}"
+            )
         return ""
 
 
@@ -386,8 +391,9 @@ def whois_domain(
         out["raw"] = str(e)
         return out
 
+    diagnostics: list[str] = []
     try:
-        blob = _flatten_whois_blob(w)
+        blob = _flatten_whois_blob(w, diagnostics)
         out["raw"] = str(w)[:20000] if w else ""
         out["privacy_guard"] = _privacy_from_blob(blob)
 
@@ -450,6 +456,9 @@ def whois_domain(
         out["error_message"] = str(e)
         out["errors_detail"] = str(e)
 
+    if diagnostics:
+        out["_diagnostics"] = diagnostics
+
     return out
 
 
@@ -500,8 +509,11 @@ def whois_ip(ip: str, timeout: int) -> dict[str, Any]:
                         out["abuse_email"] = v
                     else:
                         out[key] = v if isinstance(v, str) else str(v)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         socket.setdefaulttimeout(None)
+        out["error_message"] = (
+            f"python-whois IP lookup: {type(e).__name__}: {e}"
+        )
 
     if IPWhois is not None:
         try:
@@ -543,7 +555,10 @@ def whois_ip(ip: str, timeout: int) -> dict[str, Any]:
     return out
 
 
-def _cn_from_x509_name(name: Any) -> str | None:
+def _cn_from_x509_name(
+    name: Any,
+    ssl_notes: list[str] | None = None,
+) -> str | None:
     """Extract first commonName from an x509.Name (cryptography)."""
     if x509 is None or name is None:
         return None
@@ -551,12 +566,19 @@ def _cn_from_x509_name(name: Any) -> str | None:
         for attr in name:
             if attr.oid == x509.NameOID.COMMON_NAME:
                 return str(attr.value)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if ssl_notes is not None:
+            ssl_notes.append(
+                f"x509 CN extract: {type(e).__name__}: {e}"
+            )
         return None
     return None
 
 
-def _intel_from_der(der: bytes) -> dict[str, Any] | None:
+def _intel_from_der(
+    der: bytes,
+    ssl_notes: list[str] | None = None,
+) -> dict[str, Any] | None:
     """
     Parse peer certificate DER when ssl.getpeercert() dict is empty (OpenSSL 3 / Py3.13+).
     Returns fields compatible with check_ssl output subset.
@@ -565,10 +587,14 @@ def _intel_from_der(der: bytes) -> dict[str, Any] | None:
         return None
     try:
         cert = x509.load_der_x509_certificate(der, default_backend())
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if ssl_notes is not None:
+            ssl_notes.append(
+                f"x509 load_der: {type(e).__name__}: {e}"
+            )
         return None
-    subj_cn = _cn_from_x509_name(cert.subject)
-    iss_cn = _cn_from_x509_name(cert.issuer)
+    subj_cn = _cn_from_x509_name(cert.subject, ssl_notes)
+    iss_cn = _cn_from_x509_name(cert.issuer, ssl_notes)
     sans: list[str] = []
     try:
         ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
@@ -595,7 +621,11 @@ def _intel_from_der(der: bytes) -> dict[str, Any] | None:
     }
 
 
-def check_ssl(host: str, timeout: int) -> dict[str, Any]:
+def check_ssl(
+    host: str,
+    timeout: int,
+    ssl_notes: list[str] | None = None,
+) -> dict[str, Any]:
     """
     TLS handshake intel: cert fields, SANs, protocol, cipher.
     Never raises — returns error fields on failure.
@@ -644,7 +674,7 @@ def check_ssl(host: str, timeout: int) -> dict[str, Any]:
                         and iss.get("commonName") is not None
                     )
                 elif der:
-                    parsed = _intel_from_der(der)
+                    parsed = _intel_from_der(der, ssl_notes)
                     if parsed:
                         empty.update(parsed)
                     else:
@@ -722,10 +752,12 @@ def http_fingerprint(
         "html_intel": [],
         "ssl": {},
         "body_sample": "",
+        "ssl_warnings": [],
     }
 
-    session = requests.Session()
-    session.verify = False
+    cfg = config if isinstance(config, dict) else {}
+    ssl_notes: list[str] = []
+    session = make_session(cfg)
     if hasattr(session, "max_redirects"):
         session.max_redirects = 5
 
@@ -738,6 +770,11 @@ def http_fingerprint(
                 allow_redirects=True,
             )
         except requests.exceptions.SSLError:
+            report_ssl_certificate_problem(
+                url,
+                cfg,
+                ssl_warnings=ssl_notes,
+            )
             return None
         except requests.exceptions.RequestException:
             return None
@@ -795,11 +832,12 @@ def http_fingerprint(
             ssl_host = host
             if final_u.startswith("https://"):
                 ssl_host = urlparse(resp.url).hostname or host
-            result["ssl"] = check_ssl(ssl_host, timeout)
+            result["ssl"] = check_ssl(ssl_host, timeout, ssl_notes)
         else:
             result["ssl"] = {}
         break
 
+    result["ssl_warnings"] = ssl_notes
     return result
 
 
@@ -1366,6 +1404,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     whois_data: dict[str, Any] = {}
     if target.is_domain():
         whois_data = whois_domain(target.value, timeout, config)
+        for d in whois_data.get("_diagnostics") or []:
+            if d:
+                errors.append(f"WHOIS parse: {d}")
         if whois_data.get("error") and whois_data.get("error_message"):
             em = whois_data["error_message"]
             errors.append(f"WHOIS domain: {em}")
@@ -1397,6 +1438,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     # Phase 2 — HTTP fingerprint (independent)
     http_data = http_fingerprint(target, timeout, config)
+    for w in http_data.get("ssl_warnings") or []:
+        errors.append(w)
     if not http_data.get("reachable"):
         errors.append("HTTP(S) root not reachable")
     base["http"] = {

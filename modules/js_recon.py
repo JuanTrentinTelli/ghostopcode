@@ -9,12 +9,10 @@ import binascii
 import json
 import re
 import time
-import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
-import requests
 from bs4 import BeautifulSoup
 from rich import box
 from rich.console import Console
@@ -23,10 +21,9 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT, USER_AGENT
+from utils.http_client import get as http_get, head as http_head, resolve_base_url as http_resolve_base_url
 from utils.output import display_findings
 from utils.target_parser import Target
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 C_PRI = "#00FF41"
 C_DIM = "#6F7F86"
@@ -199,28 +196,6 @@ def _session_headers() -> dict[str, str]:
     return {"User-Agent": USER_AGENT}
 
 
-def resolve_base_url(target: Target, timeout: float) -> str | None:
-    """Pick working https or http origin."""
-    host = target.value
-    for scheme in ("https", "http"):
-        base = f"{scheme}://{host}".rstrip("/")
-        root = base + "/"
-        try:
-            r = requests.get(
-                root,
-                timeout=timeout,
-                verify=False,
-                allow_redirects=True,
-                headers=_session_headers(),
-            )
-            if 0 < r.status_code < 600:
-                u = urlparse(r.url)
-                return u._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
 def _human_size(n: int) -> str:
     if n >= 1024 * 1024:
         return f"{n / (1024 * 1024):.1f}MB"
@@ -274,7 +249,11 @@ def categorize_endpoint(url: str) -> dict[str, Any]:
     return {"category": "relative_path", "risk": "LOW", "note": None}
 
 
-def is_same_domain(map_url: str, base_url: str) -> bool:
+def is_same_domain(
+    map_url: str,
+    base_url: str,
+    warnings: list[str] | None = None,
+) -> bool:
     """
     Check if a URL's host matches the target site's registrable domain.
 
@@ -286,7 +265,11 @@ def is_same_domain(map_url: str, base_url: str) -> bool:
     try:
         map_domain = urlparse(map_url).netloc.lower()
         base_domain = urlparse(base_url).netloc.lower()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None:
+            warnings.append(
+                f"is_same_domain urlparse: {type(e).__name__}: {e}"
+            )
         return False
     if not map_domain or not base_domain:
         return False
@@ -304,13 +287,14 @@ def source_map_on_target(
     sm: dict[str, Any],
     js_file_url: str,
     base_url: str,
+    warnings: list[str] | None = None,
 ) -> bool:
     """True if the source map is first-party (inline maps use the script URL host)."""
     if sm.get("type") == "inline":
-        return is_same_domain(js_file_url, base_url)
+        return is_same_domain(js_file_url, base_url, warnings)
     mu = sm.get("url")
     if isinstance(mu, str) and mu.strip():
-        return is_same_domain(mu, base_url)
+        return is_same_domain(mu, base_url, warnings)
     return False
 
 
@@ -352,20 +336,29 @@ def prioritize_js_files(js_urls: list[str]) -> tuple[list[str], list[str]]:
     return out, skipped[:12]
 
 
-def discover_js_from_html(base_url: str, timeout: float, errors: list[str]) -> set[str]:
+def discover_js_from_html(
+    base_url: str,
+    timeout: float,
+    errors: list[str],
+    config: dict[str, Any],
+) -> set[str]:
     """
     Collect script URLs from HTML, preload, Next data, and loose URL patterns in scripts.
     """
     found: set[str] = set()
     root = base_url.rstrip("/") + "/"
     try:
-        r = requests.get(
+        r = http_get(
             root,
+            config,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
+            ssl_warnings=errors,
         )
+        if r is None:
+            errors.append("HTML discovery: SSL/connection failed")
+            return found
         html = r.text or ""
         final_base = urlparse(r.url)
         origin = f"{final_base.scheme}://{final_base.netloc}"
@@ -389,8 +382,10 @@ def discover_js_from_html(base_url: str, timeout: float, errors: list[str]) -> s
                 chunks = json.dumps(data)
                 for m in re.finditer(r'(/_next/static/[^"\'\\s]+\.js)', chunks):
                     found.add(urljoin(origin, m.group(1)))
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                errors.append(
+                    f"__NEXT_DATA__ JSON parse: {type(e).__name__}: {e}"
+                )
 
         for script in soup.find_all("script"):
             if not script.string:
@@ -414,7 +409,13 @@ def discover_js_from_html(base_url: str, timeout: float, errors: list[str]) -> s
     return found
 
 
-def brute_common_js_paths(base_url: str, timeout: float, threads: int, errors: list[str]) -> set[str]:
+def brute_common_js_paths(
+    base_url: str,
+    timeout: float,
+    threads: int,
+    errors: list[str],
+    config: dict[str, Any],
+) -> set[str]:
     """Probe common JS and API-doc paths; add URL if response looks successful."""
     found: set[str] = set()
     base = base_url.rstrip("/")
@@ -423,22 +424,28 @@ def brute_common_js_paths(base_url: str, timeout: float, threads: int, errors: l
         url = f"{base}/{path.lstrip('/')}"
         try:
             time.sleep(0.02)
-            head = requests.head(
+            head = http_head(
                 url,
+                config,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers=_session_headers(),
+                ssl_warnings=errors,
             )
+            if head is None:
+                return
             if head.status_code == 405:
-                r = requests.get(
+                r = http_get(
                     url,
+                    config,
                     timeout=timeout,
-                    verify=False,
                     allow_redirects=True,
                     headers=_session_headers(),
                     stream=True,
+                    ssl_warnings=errors,
                 )
+                if r is None:
+                    return
                 try:
                     code = r.status_code
                     cl = r.headers.get("Content-Length", "0")
@@ -679,17 +686,23 @@ def detect_secrets(js_content: str, filename: str) -> list[dict[str, Any]]:
     return findings
 
 
-def check_map_accessible(map_url: str, timeout: float, errors: list[str]) -> dict[str, Any] | None:
+def check_map_accessible(
+    map_url: str,
+    timeout: float,
+    errors: list[str],
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
     """Fetch and parse a source map JSON."""
     try:
-        r = requests.get(
+        r = http_get(
             map_url,
+            config,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
+            ssl_warnings=errors,
         )
-        if r.status_code != 200:
+        if r is None or r.status_code != 200:
             return None
         try:
             data = r.json()
@@ -728,6 +741,7 @@ def check_source_map(
     js_content: str,
     timeout: float,
     errors: list[str],
+    config: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Resolve sourceMappingURL comment, inline data URI, or .map sibling."""
     tail = js_content[-2000:] if len(js_content) > 2000 else js_content
@@ -762,14 +776,14 @@ def check_source_map(
                     "has_content": False,
                 }
         map_full = urljoin(js_url, ref)
-        got = check_map_accessible(map_full, timeout, errors)
+        got = check_map_accessible(map_full, timeout, errors, config)
         if got:
             got["found"] = True
             got["js_file"] = urlparse(js_url).path.split("/")[-1]
         return got
 
     sibling = js_url.split("?")[0] + ".map"
-    got = check_map_accessible(sibling, timeout, errors)
+    got = check_map_accessible(sibling, timeout, errors, config)
     if got:
         got["found"] = True
         got["js_file"] = urlparse(js_url).path.split("/")[-1]
@@ -783,15 +797,16 @@ def fetch_js(
 ) -> tuple[str | None, int]:
     """Download JS body up to size cap. Returns (text, size) or (None, 0)."""
     try:
-        r = requests.get(
+        r = http_get(
             url,
+            config,
             timeout=timeout,
-            verify=False,
             allow_redirects=True,
             headers=_session_headers(),
             stream=True,
+            ssl_warnings=errors,
         )
-        if r.status_code != 200:
+        if r is None or r.status_code != 200:
             return None, 0
         cl = r.headers.get("Content-Length")
         if cl and cl.isdigit() and int(cl) > MAX_JS_DOWNLOAD:
@@ -803,7 +818,10 @@ def fetch_js(
                 break
         try:
             return buf.decode("utf-8", errors="replace"), len(buf)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            errors.append(
+                f"JS body decode ({url[:80]}…): {type(e).__name__}: {e}"
+            )
             return None, 0
     except Exception as e:  # noqa: BLE001
         errors.append(f"fetch {url}: {e}")
@@ -845,6 +863,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             "INFO": [],
         },
         "errors": errors,
+        "warnings": [],
         "findings": [],
     }
 
@@ -861,7 +880,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         return base
 
     try:
-        resolved = resolve_base_url(target, timeout)
+        resolved = http_resolve_base_url(target, timeout, config, ssl_warnings=errors)
         if not resolved:
             base["status"] = "error"
             base["error"] = "Host unreachable (HTTP/HTTPS)"
@@ -885,8 +904,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
         # --- Phase 1 discovery ---
         console.print(Text("\n [1/4] Discovering JS files...", style=f"bold {C_WARN}"))
-        from_html = discover_js_from_html(resolved, timeout, errors)
-        from_brute = brute_common_js_paths(resolved, timeout, threads, errors)
+        from_html = discover_js_from_html(resolved, timeout, errors, config)
+        from_brute = brute_common_js_paths(resolved, timeout, threads, errors, config)
         all_js = set(from_html) | set(from_brute)
         prioritized, skipped_names = prioritize_js_files(sorted(all_js))
         base["stats"]["js_files_found"] = len(prioritized)
@@ -915,7 +934,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
         def work(u: str) -> dict[str, Any]:
             name = urlparse(u).path.split("/")[-1] or "script.js"
-            text, size = fetch_js(u, timeout, errors)
+            text, size = fetch_js(u, timeout, errors, config)
             row: dict[str, Any] = {
                 "url": u,
                 "size": _human_size(size) if size else "0",
@@ -927,8 +946,10 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 return {"row": row, "eps": [], "secs": [], "sm": None, "name": name}
             eps = extract_endpoints(text, resolved, name)
             secs = detect_secrets(text, name)
-            sm = check_source_map(u, text, timeout, errors)
-            if sm and not source_map_on_target(sm, u, resolved):
+            sm = check_source_map(u, text, timeout, errors, config)
+            if sm and not source_map_on_target(
+                sm, u, resolved, base["warnings"]
+            ):
                 if verbose:
                     hint = sm.get("url") or u
                     console.print(

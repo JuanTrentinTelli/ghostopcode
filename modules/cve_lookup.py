@@ -7,6 +7,8 @@ Requires NVD_API_KEY in .env (free at https://nvd.nist.gov/developers/request-an
 
 from __future__ import annotations
 
+import copy
+import json
 import re
 import time
 from typing import Any
@@ -129,6 +131,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from utils.http_client import make_session
 from utils.output import debug_log, display_findings
 
 load_dotenv()
@@ -145,6 +148,49 @@ console = Console(highlight=False, force_terminal=True)
 NVD_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 REQUEST_GAP_S = 0.62
 MAX_429_RETRIES = 3
+
+# Session-scoped (in-process only); cleared at each GhostOpcode session start.
+_NVD_CACHE: dict[str, list[dict[str, Any]]] = {}
+_NVD_CACHE_HITS = 0
+_NVD_CACHE_MISSES = 0
+
+
+def _make_cache_key(software: str, version: str | None) -> str:
+    """Normalized (software, version) for cache lookup — case-insensitive."""
+    sw = (software or "").strip().lower()
+    ver = (version or "").strip().lower()
+    return f"{sw}:{ver}"
+
+
+def _cache_get(software: str, version: str | None) -> list[dict[str, Any]] | None:
+    global _NVD_CACHE_HITS
+    key = _make_cache_key(software, version)
+    if key not in _NVD_CACHE:
+        return None
+    _NVD_CACHE_HITS += 1
+    return _NVD_CACHE[key]
+
+
+def _cache_set(
+    software: str,
+    version: str | None,
+    cves: list[dict[str, Any]],
+) -> None:
+    key = _make_cache_key(software, version)
+    _NVD_CACHE[key] = cves
+
+
+def _cache_clear() -> None:
+    """Clear NVD session cache and per-session stats (new interactive session)."""
+    global _NVD_CACHE_HITS, _NVD_CACHE_MISSES
+    _NVD_CACHE.clear()
+    _NVD_CACHE_HITS = 0
+    _NVD_CACHE_MISSES = 0
+
+
+def nvd_cache_stats() -> tuple[int, int]:
+    """Return (hits, http_requests) for debug summary."""
+    return (_NVD_CACHE_HITS, _NVD_CACHE_MISSES)
 
 
 def _env_api_key() -> str | None:
@@ -294,7 +340,10 @@ def extract_affected_versions(configurations: list[Any]) -> list[dict[str, Any]]
     return out
 
 
-def _parse_version_loose(v: str) -> Any | None:
+def _parse_version_loose(
+    v: str,
+    warnings_out: list[str] | None = None,
+) -> Any | None:
     """Best-effort PEP 440 parse; strip OpenSSH-style suffixes."""
     if not v or not str(v).strip():
         return None
@@ -303,28 +352,36 @@ def _parse_version_loose(v: str) -> Any | None:
     if m:
         try:
             return pkg_version.parse(m.group(1))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            if warnings_out is not None and len(warnings_out) < 12:
+                warnings_out.append(
+                    f"CVE version parse (prefix): {type(e).__name__}: {e}"
+                )
     try:
         return pkg_version.parse(s)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if warnings_out is not None and len(warnings_out) < 12:
+            warnings_out.append(
+                f"CVE version parse (full): {type(e).__name__}: {e}"
+            )
         return None
 
 
 def is_version_affected(
     version: str,
     affected_versions: list[dict[str, Any]],
+    warnings_out: list[str] | None = None,
 ) -> bool:
     """Check if version matches CPE ranges. Conservative: True if uncertain."""
     if not affected_versions:
         return True
-    v = _parse_version_loose(version)
+    v = _parse_version_loose(version, warnings_out)
     if v is None:
         return True
     for aff in affected_versions:
         exact = aff.get("version_exact")
         if exact:
-            ev = _parse_version_loose(str(exact))
+            ev = _parse_version_loose(str(exact), warnings_out)
             if ev is not None and ev == v:
                 return True
         start = aff.get("version_start_including")
@@ -332,22 +389,26 @@ def is_version_affected(
         end_in = aff.get("version_end_including")
         try:
             if start:
-                sv = _parse_version_loose(str(start))
+                sv = _parse_version_loose(str(start), warnings_out)
                 if sv is None:
                     continue
                 if v < sv:
                     continue
                 if end_ex:
-                    evx = _parse_version_loose(str(end_ex))
+                    evx = _parse_version_loose(str(end_ex), warnings_out)
                     if evx is not None and v < evx:
                         return True
                 elif end_in:
-                    evi = _parse_version_loose(str(end_in))
+                    evi = _parse_version_loose(str(end_in), warnings_out)
                     if evi is not None and v <= evi:
                         return True
                 else:
                     return True
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            if warnings_out is not None and len(warnings_out) < 16:
+                warnings_out.append(
+                    f"CVE version range check: {type(e).__name__}: {e}"
+                )
             return True
     return False
 
@@ -356,6 +417,7 @@ def parse_nvd_response(
     data: dict[str, Any],
     software: str,
     version: str | None,
+    warnings_out: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Parse NVD 2.0 JSON; filter by version when possible; sort by CVSS desc."""
     cves: list[dict[str, Any]] = []
@@ -414,7 +476,9 @@ def parse_nvd_response(
 
         version_affected = True
         if version and affected:
-            version_affected = is_version_affected(version, affected)
+            version_affected = is_version_affected(
+                version, affected, warnings_out
+            )
 
         if not version_affected:
             continue
@@ -469,11 +533,30 @@ def query_nvd(
     timeout: int = 12,
     _retry_429: int = 0,
     config: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Query NVD API; never raises; respects rate limits."""
+    errors_out: list[str] | None = None,
+    warnings_out: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Query NVD API; never raises; respects rate limits.
+
+    Returns ``(rows, from_cache)``. Cache hits skip HTTP and ``REQUEST_GAP_S``.
+    """
+    global _NVD_CACHE_MISSES
     keyword = build_nvd_query(software, version)
     if not keyword:
-        return []
+        return ([], False)
+
+    cached = _cache_get(software, version)
+    if cached is not None:
+        ver_s = version or ""
+        debug_log(
+            "info",
+            detail=(
+                f"NVD cache hit: {software} {ver_s} → {len(cached)} CVE(s) (no request)"
+            ),
+            config=config,
+        )
+        return (copy.deepcopy(cached), True)
 
     params: dict[str, Any] = {
         "keywordSearch": keyword[:400],
@@ -493,7 +576,10 @@ def query_nvd(
     t_req = time.perf_counter()
 
     try:
-        resp = requests.get(
+        nvd_cfg = {**(config or {}), "allow_insecure_tls": False}
+        session = make_session(nvd_cfg)
+        _NVD_CACHE_MISSES += 1
+        resp = session.get(
             NVD_BASE_URL,
             params=params,
             headers=headers,
@@ -516,8 +602,15 @@ def query_nvd(
                     timeout,
                     _retry_429 + 1,
                     config,
+                    errors_out,
+                    warnings_out,
                 )
-            return []
+            if errors_out is not None:
+                errors_out.append(
+                    f"NVD API 429 rate limited for {software!s} — exhausted retries"
+                )
+            _cache_set(software, version, [])
+            return ([], False)
         if resp.status_code in (401, 403):
             debug_log(
                 "http",
@@ -526,10 +619,30 @@ def query_nvd(
                 elapsed=time.perf_counter() - t_req,
                 config=config,
             )
-            return [{"_error": "nvd_auth", "detail": resp.text[:200]}]
+            return ([{"_error": "nvd_auth", "detail": resp.text[:200]}], False)
         resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError) as e:
+            if errors_out is not None:
+                errors_out.append(
+                    f"NVD JSON decode for {software!s}: {type(e).__name__}: {e}"
+                )
+            debug_log(
+                "http",
+                detail="NVD API",
+                result=f"JSON decode: {type(e).__name__}",
+                elapsed=time.perf_counter() - t_req,
+                config=config,
+            )
+            _cache_set(software, version, [])
+            return ([], False)
         if not isinstance(data, dict):
+            if errors_out is not None:
+                errors_out.append(
+                    f"NVD response for {software!s} is not a JSON object "
+                    f"(got {type(data).__name__})"
+                )
             debug_log(
                 "http",
                 detail="NVD API",
@@ -537,8 +650,11 @@ def query_nvd(
                 elapsed=time.perf_counter() - t_req,
                 config=config,
             )
-            return []
-        parsed = parse_nvd_response(data, software, version)
+            _cache_set(software, version, [])
+            return ([], False)
+        parsed = parse_nvd_response(
+            data, software, version, warnings_out=warnings_out
+        )
         debug_log(
             "http",
             detail="NVD API response",
@@ -546,8 +662,14 @@ def query_nvd(
             elapsed=time.perf_counter() - t_req,
             config=config,
         )
-        return parsed
+        _cache_set(software, version, parsed)
+        time.sleep(REQUEST_GAP_S)
+        return (parsed, False)
     except requests.exceptions.HTTPError as e:
+        if errors_out is not None:
+            errors_out.append(
+                f"NVD HTTP error for {software!s}: {type(e).__name__}: {e}"
+            )
         debug_log(
             "http",
             detail="NVD API",
@@ -555,8 +677,41 @@ def query_nvd(
             elapsed=time.perf_counter() - t_req,
             config=config,
         )
-        return []
+        _cache_set(software, version, [])
+        return ([], False)
+    except requests.exceptions.Timeout as e:
+        if errors_out is not None:
+            errors_out.append(
+                f"NVD request timeout for {software!s}: {type(e).__name__}: {e}"
+            )
+        debug_log(
+            "http",
+            detail="NVD API",
+            result=f"timeout: {type(e).__name__}",
+            elapsed=time.perf_counter() - t_req,
+            config=config,
+        )
+        _cache_set(software, version, [])
+        return ([], False)
+    except requests.exceptions.ConnectionError as e:
+        if errors_out is not None:
+            errors_out.append(
+                f"NVD connection failed for {software!s}: {type(e).__name__}: {e}"
+            )
+        debug_log(
+            "http",
+            detail="NVD API",
+            result=f"connection: {type(e).__name__}",
+            elapsed=time.perf_counter() - t_req,
+            config=config,
+        )
+        _cache_set(software, version, [])
+        return ([], False)
     except Exception as e:  # noqa: BLE001
+        if errors_out is not None:
+            errors_out.append(
+                f"CVE lookup failed for {software!s}: {type(e).__name__}: {e}"
+            )
         debug_log(
             "http",
             detail="NVD API",
@@ -564,7 +719,8 @@ def query_nvd(
             elapsed=time.perf_counter() - t_req,
             config=config,
         )
-        return []
+        _cache_set(software, version, [])
+        return ([], False)
 
 
 def _severity_bucket(sev: str | None, score: float | None) -> str:
@@ -604,6 +760,7 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
             "in_cisa_kev": 0,
         },
         "errors": errors,
+        "warnings": [],
         "risk_summary": {"CRITICAL": [], "HIGH": [], "MEDIUM": [], "LOW": []},
         "findings_flat": [],
         "skipped_targets": [],
@@ -677,9 +834,14 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         software = tgt["software"]
         ver = tgt.get("version")
         src = tgt["source"]
-        time.sleep(REQUEST_GAP_S)
-        raw_list = query_nvd(
-            software, ver, api_key, timeout=timeout, config=config
+        raw_list, _from_cache = query_nvd(
+            software,
+            ver,
+            api_key,
+            timeout=timeout,
+            config=config,
+            errors_out=errors,
+            warnings_out=base["warnings"],
         )
         if (
             raw_list
@@ -915,6 +1077,16 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     elapsed = time.perf_counter() - t0
     console.print()
     console.print(Text(" [✓] CVE lookup complete", style=f"bold {C_PRI}"))
+    nh, nm = nvd_cache_stats()
+    dbg_cache = ""
+    if config.get("debug"):
+        tot = nh + nm
+        pct = int(round(100 * nh / tot)) if tot else 0
+        dbg_cache = (
+            f"\n     [DEBUG] NVD cache: {nh} hit(s) · {nm} HTTP request(s)"
+            f" ({pct}% hits — duplicate (software, version) skipped)"
+        )
+
     console.print(
         Text(
             f"     Targets checked : {len(targets)}\n"
@@ -926,10 +1098,15 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
                 if kev_n
                 else ""
             )
-            + f"\n     Duration        : {elapsed:.1f}s",
+            + f"\n     Duration        : {elapsed:.1f}s"
+            + dbg_cache,
             style=C_DIM,
         )
     )
 
-    base["stats"] = {"duration_s": round(elapsed, 2)}
+    base["stats"] = {
+        "duration_s": round(elapsed, 2),
+        "nvd_cache_hits": nh,
+        "nvd_http_requests": nm,
+    }
     return base

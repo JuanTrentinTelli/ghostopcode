@@ -17,7 +17,6 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
-import urllib3
 from bs4 import BeautifulSoup
 from rich import box
 from rich.console import Console
@@ -26,10 +25,9 @@ from rich.table import Table
 from rich.text import Text
 
 from config import DEFAULT_THREADS, DEFAULT_TIMEOUT, OUTPUT_DIR, USER_AGENT
+from utils.http_client import get as http_get, head as http_head, resolve_base_url as http_resolve_base_url
 from utils.output import display_findings
 from utils.target_parser import Target
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 try:
     import fitz  # PyMuPDF
@@ -293,28 +291,6 @@ def mask_secret_display(value: str, visible: int = 8) -> str:
     return v[:visible] + "*****"
 
 
-def resolve_base_url(target: Target, timeout: float) -> str | None:
-    """Pick working https or http origin for target host."""
-    host = target.value
-    for scheme in ("https", "http"):
-        base = f"{scheme}://{host}".rstrip("/")
-        root = base + "/"
-        try:
-            ua = random.choice(USER_AGENTS)
-            r = requests.get(
-                root,
-                timeout=timeout,
-                verify=False,
-                allow_redirects=True,
-                headers={"User-Agent": ua},
-            )
-            if r.status_code > 0 and r.status_code < 600:
-                return urlparse(r.url)._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
 def _normalize_netloc(netloc: str) -> str:
     n = netloc.lower()
     if n.startswith("www."):
@@ -322,13 +298,19 @@ def _normalize_netloc(netloc: str) -> str:
     return n
 
 
-def _same_site(url: str, base_netloc: str) -> bool:
+def _same_site(
+    url: str,
+    base_netloc: str,
+    warnings: list[str] | None = None,
+) -> bool:
     try:
         p = urlparse(url)
         if p.scheme not in ("http", "https") or not p.netloc:
             return False
         return _normalize_netloc(p.netloc) == _normalize_netloc(base_netloc)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if warnings is not None and len(warnings) < 20:
+            warnings.append(f"_same_site: {type(e).__name__}: {e}")
         return False
 
 
@@ -342,20 +324,14 @@ def _file_ext_from_url(url: str) -> str | None:
     return None
 
 
-def _session(timeout: float) -> requests.Session:
-    s = requests.Session()
-    s.verify = False
-    s.headers.update({"User-Agent": USER_AGENT})
-    s.request_timeout = timeout  # type: ignore[attr-defined]
-    return s
-
-
 def crawl(
     base_url: str,
     depth: int,
     timeout: float,
     max_urls: int,
     errors: list[str],
+    config: dict[str, Any],
+    warnings: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], set[str], int]:
     """
     BFS crawl same-site links; collect HTML pages and file URLs.
@@ -382,17 +358,20 @@ def crawl(
         time.sleep(random.uniform(0.1, 0.3))
         ua = random.choice(USER_AGENTS)
         try:
-            r = requests.get(
+            r = http_get(
                 url,
+                config,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers={"User-Agent": ua},
+                ssl_warnings=errors,
             )
+            if r is None:
+                continue
             crawled += 1
             ct = (r.headers.get("content-type") or "").lower()
             final_url = r.url
-            if not _same_site(final_url, base_netloc):
+            if not _same_site(final_url, base_netloc, warnings):
                 continue
 
             ext_hit = _file_ext_from_url(final_url)
@@ -415,7 +394,7 @@ def crawl(
                     continue
                 abs_u = urljoin(final_url, href)
                 abs_u = abs_u.split("#")[0]
-                if not _same_site(abs_u, base_netloc):
+                if not _same_site(abs_u, base_netloc, warnings):
                     continue
                 fe = _file_ext_from_url(abs_u)
                 if fe:
@@ -427,7 +406,7 @@ def crawl(
                 raw = tag.get("src") or tag.get("href") or ""
                 if raw and not raw.startswith("data:"):
                     abs_u = urljoin(final_url, raw).split("#")[0]
-                    if _same_site(abs_u, base_netloc):
+                    if _same_site(abs_u, base_netloc, warnings):
                         fe = _file_ext_from_url(abs_u)
                         if fe:
                             file_urls.add(abs_u)
@@ -445,6 +424,7 @@ def brute_common_paths(
     timeout: float,
     threads: int,
     errors: list[str],
+    config: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """GET known sensitive paths in parallel; return raw probe rows."""
     base = base_url.rstrip("/")
@@ -456,13 +436,16 @@ def brute_common_paths(
         ua = random.choice(USER_AGENTS)
         try:
             time.sleep(random.uniform(0.05, 0.15))
-            r = requests.get(
+            r = http_get(
                 url,
+                config,
                 timeout=timeout,
-                verify=False,
                 allow_redirects=True,
                 headers={"User-Agent": ua},
+                ssl_warnings=errors,
             )
+            if r is None:
+                return
             body = (r.text or "")[:50000]
             with lock:
                 results.append(
@@ -599,7 +582,11 @@ def harvest_emails_from_html(html: str, source_url: str) -> list[dict[str, Any]]
     return out
 
 
-def harvest_emails_from_file(file_path: str, file_type: str) -> list[dict[str, Any]]:
+def harvest_emails_from_file(
+    file_path: str,
+    file_type: str,
+    errors: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Extract emails from downloaded document text/metadata."""
     out: list[dict[str, Any]] = []
     try:
@@ -658,8 +645,12 @@ def harvest_emails_from_file(file_path: str, file_type: str) -> list[dict[str, A
                         "kind": "text_file",
                     }
                 )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        if errors is not None:
+            errors.append(
+                f"harvest_emails_from_file ({Path(file_path).name}): "
+                f"{type(e).__name__}: {e}"
+            )
     return out
 
 
@@ -768,7 +759,10 @@ def extract_pdf_metadata(file_path: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-def extract_docx_metadata(file_path: str) -> dict[str, Any]:
+def extract_docx_metadata(
+    file_path: str,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
     """DOCX core properties."""
     out: dict[str, Any] = {
         "author": None,
@@ -800,12 +794,19 @@ def extract_docx_metadata(file_path: str) -> dict[str, Any]:
         out["internal_paths"] = list(
             dict.fromkeys(_WIN_PATH_RE.findall(text) + _UNC_PATH_RE.findall(text))
         )[:20]
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        if errors is not None:
+            errors.append(
+                f"extract_docx_metadata ({Path(file_path).name}): "
+                f"{type(e).__name__}: {e}"
+            )
     return out
 
 
-def extract_xlsx_metadata(file_path: str) -> dict[str, Any]:
+def extract_xlsx_metadata(
+    file_path: str,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
     """XLSX properties and sheet names."""
     out: dict[str, Any] = {
         "author": None,
@@ -841,8 +842,12 @@ def extract_xlsx_metadata(file_path: str) -> dict[str, Any]:
         finally:
             wb.close()
         out["internal_paths"] = out["internal_paths"][:20]
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        if errors is not None:
+            errors.append(
+                f"extract_xlsx_metadata ({Path(file_path).name}): "
+                f"{type(e).__name__}: {e}"
+            )
     return out
 
 
@@ -1021,6 +1026,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             "duration_s": 0.0,
         },
         "errors": errors,
+        "warnings": [],
         "findings": [],
     }
 
@@ -1048,7 +1054,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             save_files = False
 
     try:
-        base_url = resolve_base_url(target, timeout)
+        base_url = http_resolve_base_url(target, timeout, config, ssl_warnings=errors)
         if not base_url:
             base["status"] = "error"
             base["error"] = "Could not reach target (HTTP/HTTPS)"
@@ -1087,7 +1093,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
         try:
             pages, file_urls, crawled_n = crawl(
-                base_url, depth, timeout, max_crawl, errors
+                base_url,
+                depth,
+                timeout,
+                max_crawl,
+                errors,
+                config,
+                base["warnings"],
             )
         except KeyboardInterrupt:
             interrupted = True
@@ -1108,7 +1120,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
         try:
             brute_rows = brute_common_paths(
-                base_url, COMMON_FILE_PATHS, timeout, threads, errors
+                base_url, COMMON_FILE_PATHS, timeout, threads, errors, config
             )
         except KeyboardInterrupt:
             interrupted = True
@@ -1192,13 +1204,16 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 downloaded = False
                 try:
                     ua = random.choice(USER_AGENTS)
-                    head = requests.head(
+                    head = http_head(
                         furl,
+                        config,
                         timeout=timeout,
-                        verify=False,
                         allow_redirects=True,
                         headers={"User-Agent": ua},
+                        ssl_warnings=errors,
                     )
+                    if head is None:
+                        continue
                     cl = head.headers.get("Content-Length")
                     if cl and cl.isdigit() and int(cl) > MAX_DOWNLOAD_BYTES:
                         files_out.append(
@@ -1216,14 +1231,17 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                             }
                         )
                         continue
-                    r = requests.get(
+                    r = http_get(
                         furl,
+                        config,
                         timeout=timeout,
-                        verify=False,
                         allow_redirects=True,
                         headers={"User-Agent": ua},
                         stream=True,
+                        ssl_warnings=errors,
                     )
+                    if r is None:
+                        continue
                     data = b""
                     for chunk in r.iter_content(65536):
                         data += chunk
@@ -1247,9 +1265,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                         if ext == "pdf":
                             meta = extract_pdf_metadata(local_path)
                         elif ext == "docx":
-                            meta = extract_docx_metadata(local_path)
+                            meta = extract_docx_metadata(local_path, errors)
                         elif ext == "xlsx":
-                            meta = extract_xlsx_metadata(local_path)
+                            meta = extract_xlsx_metadata(local_path, errors)
                         meta = {k: v for k, v in meta.items() if v not in (None, [], "")}
                         all_meta_raw.append(meta)
 
@@ -1334,6 +1352,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     for rec in harvest_emails_from_file(
                         fo["local_path"],
                         fo.get("type") or "",
+                        errors,
                     ):
                         add_email_record(rec)
 

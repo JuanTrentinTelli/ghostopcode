@@ -4,6 +4,7 @@ Serialize full session dict to indented JSON with safe type coercion.
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import date, datetime
 from enum import Enum
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import config as app_config
+
+from utils.redact import redact_dict
 
 
 def _default_handler(obj: Any) -> Any:
@@ -43,13 +46,14 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
     out.mkdir(parents=True, exist_ok=True)
     output_path = out / "report.json"
 
+    redacted_session = redact_dict(copy.deepcopy(session))
     report = {
         "ghostopcode": {
             "version": getattr(app_config, "VERSION", "1.5.0"),
             "generated": datetime.now().isoformat(timespec="seconds"),
             "report_type": "recon_session",
         },
-        **session,
+        **redacted_session,
     }
 
     with open(output_path, "w", encoding="utf-8") as f:

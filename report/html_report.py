@@ -4,6 +4,7 @@ Render executive HTML report from session data via Jinja2.
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,8 @@ from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup, escape
 
 import config as app_config
+
+from utils.redact import redact_dict
 
 # Pretty names for raw module keys in session.modules_run
 MODULE_LABELS: dict[str, str] = {
@@ -166,14 +169,15 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
     env.filters["json_pretty"] = _json_pretty
 
     template = env.get_template("report.html.j2")
-    res = session.get("results") or {}
+    redacted_session = redact_dict(copy.deepcopy(session))
+    res = redacted_session.get("results") or {}
     if not isinstance(res, dict):
         res = {}
     risk_counts = count_findings_by_risk(res)
     summary = _executive_summary(res, risk_counts)
 
     html = template.render(
-        session=session,
+        session=redacted_session,
         results=res,
         summary=summary,
         risk_counts=risk_counts,
