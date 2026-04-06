@@ -41,6 +41,7 @@ from config import (
     count_lines,
 )
 from utils.output import display_findings
+from utils.subdomain_intel import apply_subdomain_ip_intel
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -808,6 +809,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             )
     else:
         _render_results_table(found)
+
+    apply_subdomain_ip_intel(base, found, domain, config, console)
+
     if base["takeover_candidates"]:
         console.print()
         console.print(

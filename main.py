@@ -28,6 +28,7 @@ import config as app_config
 
 from modules.cve_lookup import _cache_clear
 from report import html_report, json_report
+from utils.asn_lookup import clear as asn_cache_clear
 from utils.dns_cache import clear as dns_cache_clear
 from utils.banner import show_banner
 from utils.base_module import (
@@ -115,6 +116,8 @@ _MODULE_IMPORTS: dict[str, str] = {
     "waf": "modules.waf_detect",
     "urls": "modules.url_harvester",
     "subfinder": "modules.subfinder_enum",
+    "dnsx": "modules.dnsx_enum",
+    "httpx": "modules.httpx_probe",
     "arp": "modules.network.arp_scan",
     "sniff": "modules.network.packet_sniffer",
 }
@@ -350,8 +353,10 @@ _MODULE_ROWS: list[tuple[int, str, str, str]] = [
     (10, "waf", "WAF detection", "identify WAF/IDS/IPS/CDN"),
     (11, "urls", "URL harvester", "GAU + historical URLs + vuln patterns"),
     (12, "subfinder", "Subfinder", "passive OSINT subdomain enum (requires subfinder)"),
-    (13, "arp", "ARP scan", "CIDR only"),
-    (14, "sniff", "Packet sniffer", "CIDR / single IP"),
+    (13, "dnsx", "dnsx", "bulk DNS resolution + wildcard detection (requires dnsx)"),
+    (14, "httpx", "httpx", "HTTP/HTTPS probe + tech fingerprint (requires httpx)"),
+    (15, "arp", "ARP scan", "CIDR only"),
+    (16, "sniff", "Packet sniffer", "CIDR / single IP"),
 ]
 
 
@@ -378,8 +383,8 @@ def _render_module_menu(target: Target) -> None:
         desc = Text(blurb, style=C_MUTED)
         console.print(Text.assemble(tag, name_part, desc))
 
-    core = _MODULE_ROWS[:12]
-    cidr_only = _MODULE_ROWS[12:]
+    core = _MODULE_ROWS[:14]
+    cidr_only = _MODULE_ROWS[14:]
 
     for mid, key, title, blurb in core:
         _line(mid, key, title, blurb)
@@ -1047,7 +1052,11 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         stats = res.get("stats") or {}
         n = len(res.get("found") or [])
         rps = stats.get("req_per_sec", 0)
-        return f"{n} subs · {rps} req/s"
+        parts = [f"{n} subs", f"{rps} req/s"]
+        ims = int(stats.get("ip_multi_service") or 0)
+        if ims > 0:
+            parts.append(f"{ims} IPs mapped")
+        return " · ".join(parts)
     if mod == "whois_scan":
         tech_n = len(res.get("technologies") or [])
         flags = res.get("security_flags") or []
@@ -1176,6 +1185,63 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
             f"{stt.get('new_vs_wordlist', 0)} only-subfinder",
             f"{stt.get('duration_s', 0)}s",
         ]
+        ims = int(stt.get("ip_multi_service") or 0)
+        if ims > 0:
+            parts.append(f"{ims} IPs mapped")
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
+    if mod == "dnsx_enum":
+        st = res.get("status")
+        if st == "not_installed":
+            return "dnsx not installed"
+        if st == "skipped":
+            return None
+        tot = int(res.get("total_fqdns") or res.get("stats", {}).get("total_fqdns") or 0)
+        ok = int(res.get("total_resolved") or res.get("stats", {}).get("total_resolved") or 0)
+        wc = res.get("wildcard") or {}
+        wc_n = 1 if isinstance(wc, dict) and wc.get("detected") else 0
+        c = len(res.get("critical_findings") or [])
+        parts = [f"{ok}/{tot} resolved", f"{wc_n} wildcard", f"{c} critical"]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
+    if mod == "httpx_probe":
+        st = res.get("status")
+        if st == "not_installed":
+            return "httpx not installed"
+        if st == "skipped":
+            return None
+        stt = res.get("stats") or {}
+        probed = res.get("probed")
+        url_n = int(
+            stt.get("total_urls_live")
+            or res.get("live_count")
+            or stt.get("live_count")
+            or (len(probed) if isinstance(probed, list) else 0)
+        )
+        hosts_raw = stt.get("unique_hosts_live")
+        if hosts_raw is not None:
+            hosts_n = int(hosts_raw)
+        elif isinstance(probed, list):
+            from modules.httpx_probe import count_unique_probe_hosts
+
+            hosts_n = count_unique_probe_hosts(
+                [x for x in probed if isinstance(x, dict)]
+            )
+        else:
+            hosts_n = 0
+        c = len(res.get("critical_findings") or [])
+        dur = stt.get("duration_s") or res.get("duration_s") or 0
+        parts = [f"{hosts_n} hosts", f"{url_n} URLs", f"{c} critical", f"{dur}s"]
         ne = len([x for x in (res.get("errors") or []) if x])
         nw = len([x for x in (res.get("warnings") or []) if x])
         if ne:
@@ -1228,6 +1294,7 @@ def _run_modules_styled(
     rows: list[dict[str, Any]] = []
     raw_by_module: dict[str, Any] = {}
     for mid, key, title in modules:
+        cfg["session_results"] = dict(raw_by_module)
         if key == "subfinder":
             prev = raw_by_module.get("subdomain_enum")
             if isinstance(prev, dict) and prev.get("status") == "success":
@@ -1311,6 +1378,18 @@ def _run_modules_styled(
             elif status == "not_installed":
                 console.print(Text("     → subfinder not on PATH", style=C_WARN))
             # Rich output from subfinder_enum.run()
+        elif res.get("module") == "dnsx_enum":
+            if status == "skipped":
+                console.print(Text("     → skipped (domain only)", style=C_WARN))
+            elif status == "not_installed":
+                console.print(Text("     → dnsx not on PATH", style=C_WARN))
+            # Rich output from dnsx_enum.run()
+        elif res.get("module") == "httpx_probe":
+            if status == "skipped":
+                console.print(Text("     → skipped (domain only)", style=C_WARN))
+            elif status == "not_installed":
+                console.print(Text("     → httpx (ProjectDiscovery) not found", style=C_WARN))
+            # Rich output from httpx_probe.run()
         elif status == "pending":
             console.print(
                 Text("     → not implemented yet (stub)", style=C_DIM)
@@ -1465,6 +1544,7 @@ def main() -> None:
     session_dir = _make_session_output_dir(target)
     _cache_clear()
     dns_cache_clear()
+    asn_cache_clear()
 
     # --- Modules ---------------------------------------------------------------
     _render_module_menu(target)

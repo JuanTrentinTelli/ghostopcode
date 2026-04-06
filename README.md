@@ -1,298 +1,99 @@
-<div align="center">
+# GhostOpcode
 
-```
-  ██████  ██   ██  ██████  ███████ ████████
- ██       ██   ██ ██    ██ ██         ██
- ██   ███ ███████ ██    ██ ███████    ██
- ██    ██ ██   ██ ██    ██      ██    ██
-  ██████  ██   ██  ██████  ███████    ██
+![Version](https://img.shields.io/badge/Version-1.7.0-orange?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-  ██████  ██████   ██████  ██████  ██████  ███████
- ██    ██ ██   ██ ██      ██    ██ ██   ██ ██
- ██    ██ ██████  ██      ██    ██ ██   ██ █████
- ██    ██ ██      ██      ██    ██ ██   ██ ██
-  ██████  ██       ██████  ██████  ██████  ███████
-```
-
-**v1.6.0 · by GhostOpcode · Python Recon Framework**
-
-![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Kali-brightgreen?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.6.0-orange?style=flat-square)
-
-> Offensive reconnaissance framework — 100% local, no external APIs (optional CVE lookup via NVD only)
-
-</div>
-
----
-
-## What is GhostOpcode?
-
-GhostOpcode is an **offensive reconnaissance** tool built for penetration testers,
-security students, and CTF enthusiasts.
-
-It automates the information-gathering phase before a pentest, wrapping everything
-you need to know about a target — domain, IP, or local network — in one **interactive**
-CLI. **No command-line arguments required**; run it and follow the menu.
-
----
-
-## Features
-
-| # | Module | What it does |
-|---|--------|--------------|
-| 1 | **DNS Recon** | Registros A/MX/NS/TXT/SOA/CAA/SRV + zone transfer (AXFR). Detecta tecnologias via DNS. **SPF/DMARC/DKIM intelligence** com avaliação de risco de spoofing e phishing. |
-| 2 | **Subdomain Enum** | Discovers subdomains via wordlist bruteforce. Detects wildcard DNS and subdomain takeover candidates. |
-| 3 | **WHOIS + Fingerprint** | Domain/IP registration data. Detects web server, CMS, CDN, and backend hints from HTTP headers. Audits SSL certificates. |
-| 4 | **Port scan** | TCP connect scan + nmap com **3 níveis de intensidade**: Standard (-sV), Enhanced (-sV -sC), Vuln scan (`--script vuln`, CONFIRM obrigatório). CVE lookup automático pós-scan. |
-| 5 | **Dir Enum** | Directory and file bruteforce (Fast / Normal / Full). HTTP catch-all detection. Risk-bucketed findings. |
-| 6 | **Harvester** | Crawls the site and pulls PDFs, DOCs, XLS. Extracts emails, names, LinkedIn profiles. Scans for exposed sensitive files (.env, .git, backups). Document metadata extraction. |
-| 7 | **HTTP Methods** | Probes dangerous HTTP methods (PUT, DELETE, TRACE). CORS misconfiguration detection. Security header audit. |
-| 8 | **JS Recon** | Analyses target JavaScript. Extracts hardcoded API endpoints, secrets (AWS keys, tokens), and exposed source maps. |
-| 9 | **Hash Module** | Identifies hash algorithms. Local wordlist cracking (e.g. rockyou). Optional **hashcat** integration. |
-| 10 | **WAF Detection** | Identifies WAF/CDN/IPS from headers, probes, and timing. |
-| 11 | **URL Harvester** | Historical URLs from Wayback, Common Crawl, OTX, optional gau; vulnerability-style bucketing. |
-| 12 | **Subfinder Enum** | Enumeração profunda de subdomínios via subfinder (ProjectDiscovery). Usa Certificate Transparency logs e múltiplas fontes OSINT passivas. Compara com subdomain_enum e destaca subdomínios encontrados apenas pelo subfinder. Mais eficiente e estável no Kali Linux do que o motor passivo anterior. |
-| 13 | **ARP Scan** | Finds live hosts on the LAN via ARP. Vendor identification from MAC. Requires a **CIDR** target and **root/sudo**. |
-| 14 | **Packet Sniffer** | Live traffic capture. Protocol parsing and passive intel. Requires **root/sudo**. |
-| ★ | **CVE Lookup** | Runs automatically after a port scan (when configured). Queries the **NVD** using discovered services and versions. Returns relevant CVEs with CVSS scores. |
-
----
-
-## Segurança e qualidade
-
-| Feature | Descrição |
-|---------|-----------|
-| **Redação de segredos** | Credenciais mascaradas automaticamente em JSON/HTML/log. Terminal mostra valores completos. |
-| **TLS configurável** | Seleção por sessão: Strict (`verify=True`) ou Relaxed para alvos com certificados auto-assinados. |
-| **Log de operador** | Ações registradas sem expor inputs sensíveis (CONFIRM, hashes). |
-| **Lazy import** | Módulos carregados sob demanda — módulo quebrado não derruba o menu. |
-| **Cache NVD** | CVE lookup sem requests duplicadas na mesma sessão. |
-| **Cache DNS** | FQDNs resolvidos uma vez e compartilhados entre módulos. |
-| **Limites de memória** | `MAX_URLS_HARVESTER`, `MAX_URLS_DIR_ENUM`, etc. configuráveis em `config.py`. |
-| **Path traversal** | Slug de output sanitizado com `Path.resolve()` / contenção sob `OUTPUT_DIR`; inputs maliciosos rejeitados no parser. |
-
----
-
-## Automatic reports
-
-Every session writes **three artifacts** under `output/`:
-
-```
-output/
-└── target_20260325_143022/
-    ├── report.json     # Structured machine-readable results
-    ├── report.html     # Visual report (open in a browser)
-    └── session.log     # Chronological session log
-```
-
----
-
-## Session log policy
-
-The `session.log` file records module activity for audit and troubleshooting.
-
-**What is logged**
-
-- Module start/end with timestamps (via stdout mirror and explicit lines)
-- Findings (sensitive values masked per the redact policy)
-- Errors and warnings
-- Operator actions (what was decided, not raw typed secrets)
-
-**What is not logged as literal input**
-
-- Raw confirmation tokens for high-risk flows (e.g. vuln scan authorization)
-- Raw password-hash strings submitted in the hash module
-- Values that match conservative sensitive-input patterns echoed on the TTY
-
-**Sharing logs**
-
-Session logs are intended to be safer to share for diagnostics: sensitive operator input and common secret-shaped strings are redacted before or instead of being written in identifiable form. Reports (`report.json` / `report.html`) use a separate redaction pass.
-
----
-
-## Requirements
-
-- **Python 3.10+**
-- **Linux** (Kali Linux recommended)
-- **nmap** installed on the system
-- **Root/sudo** only for ARP scan and packet sniffer
-
----
-
-## Installation
-
-### 1. Clone the repository
+**GhostOpcode** é um framework interativo de reconhecimento ofensivo **local** (Python): DNS, subdomínios, port scan, HTTP, relatórios JSON/HTML e sessão em disco. Use **apenas** em alvos autorizados.
 
 ```bash
-git clone https://github.com/JuanTrentinTelli/ghostopcode.git
-cd ghostopcode
-```
-
-### 2. Install Python dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Install wordlists (Kali Linux)
-
-```bash
-sudo apt install seclists wordlists
-```
-
-GhostOpcode auto-detects standard Kali wordlist paths.
-On other distros, see [Wordlists](#wordlists).
-
-### 4. Install nmap
-
-```bash
-sudo apt install nmap
-```
-
-### Optional external tools
-
-| Tool | Purpose | Install |
-|------|---------|---------|
-| `subfinder` | Deep passive subdomain enumeration (OSINT) | `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest` |
-| `hashcat` | GPU-assisted hash cracking | `sudo apt install hashcat` |
-| `gau` | Extra historical URL sources | `go install github.com/lc/gau/v2/cmd/gau@latest` |
-
-### 5. (Optional) CVE lookup
-
-```bash
-# Create a .env file at the project root
-echo "NVD_API_KEY=your-key-here" > .env
-```
-
-Free API key: https://nvd.nist.gov/developers/request-an-api-key
-
----
-
-## Usage
-
-```bash
-# Default — interactive menu
 python main.py
-
-# With root (required for ARP scan and sniffer)
-sudo python main.py
-```
-
-### Example session
-
-```
-Enter target (domain / IP / CIDR):
-❯ example.com                   # domain
-❯ 192.168.1.1                   # IP
-❯ 192.168.1.0/24                # local network (CIDR)
-
-Select modules:
-[1] DNS recon
-[2] Subdomain enum
-...
-[0] RUN ALL — runs every module available for the target
-```
-
-## Modos de output
-
-| Modo | Comportamento |
-|------|---------------|
-| **Normal** | Output completo no terminal (padrão) |
-| **Quiet** | Mostra apenas CRITICAL e HIGH |
-| **Debug** | Normal + subprocess calls + HTTP/API traces com timestamps |
-
-Modo escolhido no menu de opções da sessão. **Relatórios JSON/HTML são sempre escritos completos** (com redação de segredos), independentemente do modo.
-
-| Modo | Atalho no menu |
-|------|----------------|
-| Normal | `[1]` (padrão) |
-| Quiet | `[2]` |
-| Debug | `[3]` |
-
-### Runtime options
-
-| Option | Description | Example |
-|--------|-------------|---------|
-| Threads | Parallel workers | 50 (default), 200 (aggressive) |
-| Timeout | Per-connection timeout | 5s (default), 2s (fast) |
-| Ports | Port range | `common`, `1-1024`, `80,443`, `1-65535` |
-| Dir mode | Dir enum depth / wordlist | Fast (~30s), Normal (~5min), Full (~20min) |
-
----
-
-## Wordlists
-
-GhostOpcode resolves wordlists from common Kali paths first.
-
-**Kali Linux:**
-
-```bash
-sudo apt install seclists wordlists
-```
-
-**Other distros:**
-
-```bash
-# SecLists
-sudo git clone https://github.com/danielmiessler/SecLists /usr/share/seclists
-
-# rockyou (hash cracking)
-# Download: https://github.com/brannondorsey/naive-hashcat/releases
-# Save as: wordlists/rockyou.txt
-```
-
-**Manual (any OS):** create `wordlists/` and drop your files:
-
-```
-wordlists/
-├── subdomains-top1million.txt
-├── directory-list-2.3-medium.txt
-└── rockyou.txt
 ```
 
 ---
 
-## Authorized test targets
+## Módulos (menu)
 
-Safe hosts for practice (no special permission needed):
+| # | Nome | Descrição |
+|---|------|-----------|
+| 1 | DNS recon | A/MX/NS/TXT + tentativa de zone transfer |
+| 2 | Subdomain enum | Bruteforce com wordlist |
+| 3 | WHOIS | Registro + fingerprint técnico |
+| 4 | Port scan | Socket + nmap + banner (3 níveis) |
+| 5 | Dir enum | Bruteforce de caminhos |
+| 6 | Harvester | Crawl + PDF/DOC/XLS + e-mails + vazamentos |
+| 7 | HTTP methods | OPTIONS / PUT / DELETE / TRACE |
+| 8 | JS recon | Endpoints + segredos + source maps |
+| 9 | Hash module | Identificar + crack local |
+| 10 | WAF detection | Fingerprint WAF/IDS/CDN |
+| 11 | URL harvester | GAU + URLs históricas + padrões |
+| 12 | **Subfinder** | Enum passiva de subdomínios (CT + fontes OSINT). Agrupamento por IP com **ASN lookup via RDAP** (sem ranges hardcoded). |
+| 13 | **dnsx** | Resolução DNS em massa + deteção de wildcard. Valida FQDNs com A/AAAA/CNAME/MX (e mais), CDN via flags do binário. |
+| 14 | **httpx** | Probe HTTP/HTTPS em massa. Título, status, tecnologias (Wappalyzer), TLS, CDN; múltiplas portas por host; stdin + `-nf` para HTTP e HTTPS. |
+| 15 | ARP scan | Apenas CIDR |
+| 16 | Packet sniffer | IP único ou CIDR |
 
-| Target | Type | Notes |
-|--------|------|-------|
-| `scanme.nmap.org` | Domain | Official nmap.org scan target |
-| `testphp.vulnweb.com` | Domain | Acunetix test application |
-| `45.33.32.156` | IP | scanme.nmap.org address |
+CVE lookup (NVD) corre automaticamente quando há port scan ou WHOIS na sessão.
 
 ---
 
-## Política de segurança de artefatos
+## Subdomain intelligence chain
 
-O GhostOpcode protege dados sensíveis coletados durante o recon:
+Os módulos **12 → 13 → 14** formam uma cadeia que transforma um domínio em **superfície web priorizada**:
 
-- **Terminal** → valores completos visíveis ao operador
-- **report.json** → valores mascarados (`mypa****`)
-- **report.html** → valores mascarados
-- **session.log** → ações registradas, não inputs literais
-
-Credenciais encontradas (senhas em URLs, API keys, tokens) são automaticamente mascaradas antes de qualquer persistência em disco. O relatório é mais seguro para compartilhar com o cliente.
-
----
-
-## Limites configuráveis
-
-Editar `config.py` para ajustar limites de memória:
-
-```python
-MAX_URLS_HARVESTER   = 10_000   # url_harvester
-MAX_URLS_DIR_ENUM    = 5_000    # dir_enum
-MAX_URLS_JS_RECON    = 2_000    # js_recon
-MAX_SUBDOMAINS       = 5_000    # subdomain_enum
-MAX_FINDINGS_MODULE  = 1_000    # por severidade
-MAX_REPORT_FINDINGS  = 10_000   # relatório JSON/HTML
+```
+[12] subfinder  →  subdomínios descobertos passivamente
+         ↓            + agrupamento por IP (ASN via RDAP)
+[13] dnsx       →  FQDNs validados com registros DNS completos
+         ↓            + wildcard + CDN
+[14] httpx      →  serviços HTTP/HTTPS vivos
+                   + título + tecnologia + status + TLS
 ```
 
-Definir como `0` para remover o limite (não recomendado em alvos grandes).
+**Em cerca de 2 minutos** (dependendo do alvo e da rede), o operador obtém:
+
+- Quantos subdomínios existem e onde estão hospedados  
+- Indícios de cloud/CDN (via RDAP + probes)  
+- IPs que concentram mais serviços (candidatos a vhost / priorização)  
+- Serviços web vivos, título, stack e classificação de risco  
+
+**Seleção combinada** (a sessão injeta resultados automaticamente):
+
+```text
+→ selecionar: 12 13 14
+```
+
+O **dnsx** consome subdomínios já encontrados pelo subfinder (e/ou enum por wordlist); o **httpx** prioriza saída validada do **dnsx**, depois subfinder, depois subdomain enum.
+
+---
+
+## Requisitos
+
+- Python 3.10+  
+- Dependências: `pip install -r requirements.txt`  
+
+Wordlists: o projeto tenta caminhos típicos do Kali (SecLists). Veja diagnóstico ao arrancar o `main.py`.
+
+---
+
+## Ferramentas externas (opcionais)
+
+| Ferramenta | Instalação (exemplo) | Uso |
+|------------|----------------------|-----|
+| **subfinder** | `sudo apt install subfinder` ou `go install … subfinder@latest` | Módulo [12] |
+| **dnsx** | `sudo apt install dnsx` | Módulo [13] |
+| **httpx** (ProjectDiscovery) | [Releases](https://github.com/projectdiscovery/httpx/releases) — binário Linux ou `go install … httpx@latest` | Módulo [14] |
+| **nmap** | `sudo apt install nmap` | Módulo [4] |
+| **hashcat** | `sudo apt install hashcat` | Módulo [9] |
+
+Se o binário não existir, o módulo correspondente reporta `not_installed` e o resto do menu continua utilizável.
+
+---
+
+## Saída
+
+- Diretório de sessão sob `output/` (ignorado pelo git)  
+- Relatórios **JSON** + **HTML** + **log** por sessão  
 
 ---
 
@@ -300,32 +101,23 @@ Definir como `0` para remover o limite (não recomendado em alvos grandes).
 
 | Versão | O que mudou |
 |--------|-------------|
-| **v1.6.0** | Segurança de artefatos (redact) · TLS configurável · lazy import · cache NVD/DNS · limites de memória · path traversal fix · SPF/DMARC/DKIM intelligence · nmap 3 níveis · SESSION COMPLETE correto · hash skip no RUN ALL · erros não silenciosos · log de operador |
-| **v1.5.0** | SPF/DMARC/DKIM parser · quiet mode · debug mode · refactor base_module · session summary fix · hash module skip no RUN ALL |
-| v1.4.1 | Substituído AMASS por subfinder |
-| v1.4.0 | WAF Detection · URL Harvester · Subfinder enum · terminal verbosity |
+| **v1.7.0** | **Subdomain intelligence chain:** agrupamento por IP + ASN (RDAP) no subfinder/subdomain enum (`utils/asn_lookup.py`, `utils/subdomain_intel.py`) · módulo **[13] dnsx** — resolução em massa, wildcard, JSONL · módulo **[14] httpx** — probe HTTP/HTTPS, tech/TLS, múltiplas portas, hosts vs URLs no resumo da tabela RESULTS · `resume.cfg` no `.gitignore` |
+| v1.6.0 | Segurança de artefatos (redact) · TLS configurável · lazy import · caches NVD/DNS · limites de memória · hardening de paths · intel SPF/DMARC/DKIM · nmap 3 níveis · SESSION COMPLETE · hash skipped no RUN ALL |
+| v1.5.0 | Parser SPF/DMARC/DKIM · quiet/debug · refactor `base_module` |
+| v1.4.1 | Subfinder no lugar do AMASS |
+| v1.4.0 | WAF Detection · URL Harvester · Subfinder · verbosidade no terminal |
 | v1.3.1 | Filtro CVEs genéricos · hotfix logger |
-| v1.3.0 | nmap -sV integrado no port scan |
-| v1.2.0 | CVE lookup automático com NVD API |
-| v1.1.0 | Hotfixes: logger, wordlists, catchall detection |
-| v1.0.0 | Lançamento inicial — 12 módulos de recon |
+| v1.3.0 | nmap -sV no port scan |
+| v1.2.0 | CVE lookup automático (NVD API) |
+| v1.1.0 | Hotfixes: logger, wordlists, catchall |
+| v1.0.0 | Lançamento inicial — recon modular |
 
 ---
 
-## Legal disclaimer
+## Aviso legal
 
-> **Authorized targets only.**
->
-> Using this tool against systems **without explicit written permission** is
-> **illegal** in most jurisdictions.
->
-> The authors are not responsible for misuse. Always obtain proper authorization
-> before testing.
+Autorize sempre o alvo por escrito. O uso indevido é da sua exclusiva responsabilidade.
 
 ---
 
-## Author
-
-**GhostOpcode** · v1.6.0 · Python Recon Framework
-
-[![GitHub](https://img.shields.io/badge/GitHub-JuanTrentinTelli-black?style=flat-square&logo=github)](https://github.com/JuanTrentinTelli/ghostopcode)
+*v1.7.0 · by GhostOpcode*

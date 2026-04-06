@@ -208,6 +208,20 @@
     .badge.low { background: rgba(88,166,255,0.18); color: var(--low); }
     .badge.info { background: var(--bg-tertiary); color: var(--muted); }
 
+    .intel-highlight {
+      background: var(--bg-tertiary);
+      border-left: 3px solid var(--accent);
+      padding: 0.65rem 0.85rem;
+      border-radius: 6px;
+      margin: 0.75rem 0 1rem;
+      font-size: 0.9rem;
+      color: var(--text);
+    }
+    .intel-highlight .mono { color: var(--accent); }
+    table.ip-grouping-table tbody tr.top-ip-row td {
+      background: rgba(0, 255, 65, 0.07);
+    }
+
     .alert {
       border-radius: 8px;
       padding: 0.75rem 1rem;
@@ -403,6 +417,47 @@
 </section>
 {% endif %}
 
+{# IP grouping (subfinder + subdomain enum) — rich rows from session #}
+{% macro render_ip_grouping(mod) -%}
+  {% set rows = mod.ip_grouping_rows | default([]) %}
+  {% if rows | length > 0 %}
+  <h3>Agrupamento por IP (infraestrutura)</h3>
+  <p class="muted">IPs com dois ou mais hostnames no mesmo endereço — úteis para virtual host discovery e priorização.</p>
+  {% set top = mod.top_ip | default(none) %}
+  {% if top %}
+  <div class="intel-highlight">
+    <strong>Maior concentração:</strong>
+    <span class="mono">{{ top | e }}</span>
+    {% set ipp = mod.ip_providers | default({}) %}
+    {% set torg = ipp.get(top, '') %}
+    {% if torg and torg not in ['unknown', 'private', ''] %}
+    <span class="muted"> · {{ torg | e }}</span>
+    {% endif %}
+    {% for r in rows %}
+      {% if r.ip == top %}
+    <span class="muted"> — {{ r.services }} serviço(s) · risco agregado </span>
+    <span class="badge {{ (r.risk | string | lower) | e }}">{{ r.risk | e }}</span>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+  <table class="data ip-grouping-table">
+    <thead><tr><th>IP</th><th>Provider</th><th>Services</th><th>Subdomains</th><th>Risk</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr{% if top and r.ip == top %} class="top-ip-row"{% endif %}>
+        <td class="mono">{{ r.ip | e }}</td>
+        <td>{{ r.provider | default('—') | e }}</td>
+        <td>{{ r.services }}</td>
+        <td class="cell-long">{{ r.subdomains_display | e }}</td>
+        <td><span class="badge {{ (r.risk | string | lower) | e }}">{{ r.risk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+{%- endmacro %}
+
 {# --- Subdomains --- #}
 {% if results.get('subdomain_enum') and results.subdomain_enum.status != 'skipped' %}
 <section class="module" id="subs">
@@ -438,6 +493,7 @@
     {% endfor %}
     </tbody>
   </table>
+  {{ render_ip_grouping(results.subdomain_enum) }}
   {% set toc = results.subdomain_enum.takeover_candidates | default([]) %}
   {% if toc %}
   <h3>Candidatos a takeover / dangling</h3>
@@ -1084,6 +1140,7 @@
   </table>
   {% if af | length > 200 %}<p class="muted">Mostrando 200 de {{ af | length }}.</p>{% endif %}
   {% endif %}
+  {{ render_ip_grouping(results.subfinder_enum) }}
   {% if results.subfinder_enum.errors | default([]) %}
   <h3>Erros</h3>
   <ul class="compact">{% for e in results.subfinder_enum.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>

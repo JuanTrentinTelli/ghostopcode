@@ -25,6 +25,7 @@ from rich.text import Text
 
 import config as app_config
 from utils.output import debug_log, display_findings
+from utils.subdomain_intel import apply_subdomain_ip_intel
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -673,6 +674,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         if len(found_rows) > 35:
             tbl.add_row("…", "…", f"+{len(found_rows) - 35} rows", "", "")
         console.print(tbl)
+
+    apply_subdomain_ip_intel(base, found_rows, domain, config, console)
 
     rc = sum(1 for r in found_rows if r.get("risk") == "CRITICAL")
     rh = sum(1 for r in found_rows if r.get("risk") == "HIGH")

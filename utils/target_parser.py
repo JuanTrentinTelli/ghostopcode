@@ -35,6 +35,8 @@ _DOMAIN_MODULES = frozenset(
         "waf",
         "urls",
         "subfinder",
+        "dnsx",
+        "httpx",
     }
 )
 _IP_MODULES = frozenset(
@@ -87,7 +89,7 @@ class Target:
         Return True if the module makes sense for this target type.
 
         Compatibility:
-          DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder
+          DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx
           IP     → dns, whois, ports, dirs, harvest, methods, js, hash, sniff, waf
           CIDR   → arp, ports, sniff
         """

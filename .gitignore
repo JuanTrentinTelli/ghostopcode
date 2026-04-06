@@ -58,6 +58,7 @@ session.log
 hashcat.potfile
 
 # Arquivos temporários
+.tmp_dnsx_test/
 *.tmp
 *.temp
 *.bak
@@ -71,3 +72,5 @@ hashcat.potfile
 *.pfx
 id_rsa
 id_ed25519
+resume.cfg
+COMMIT_MSG.txt
