@@ -142,7 +142,7 @@ USER_AGENT = DEFAULT_USER_AGENT
 OUTPUT_DIR = "output"
 
 # ── Meta ────────────────────────────────────────────────────────────────────
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 AUTHOR = "GhostOpcode"
 
 # ── Memory limits ─────────────────────────────────────────────────────────────

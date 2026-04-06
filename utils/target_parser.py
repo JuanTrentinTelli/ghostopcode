@@ -37,6 +37,8 @@ _DOMAIN_MODULES = frozenset(
         "subfinder",
         "dnsx",
         "httpx",
+        "synth",
+        "nuclei",
     }
 )
 _IP_MODULES = frozenset(
@@ -51,6 +53,8 @@ _IP_MODULES = frozenset(
         "hash",
         "sniff",
         "waf",
+        "synth",
+        "nuclei",
     }
 )
 _CIDR_MODULES = frozenset({"arp", "ports", "sniff"})
@@ -89,8 +93,8 @@ class Target:
         Return True if the module makes sense for this target type.
 
         Compatibility:
-          DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx
-          IP     → dns, whois, ports, dirs, harvest, methods, js, hash, sniff, waf
+          DOMAIN → dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx, synth, nuclei
+          IP     → dns, whois, ports, dirs, harvest, methods, js, hash, sniff, waf, synth, nuclei
           CIDR   → arp, ports, sniff
         """
         key = module.lower().strip()

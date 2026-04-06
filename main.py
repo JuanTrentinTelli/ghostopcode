@@ -118,6 +118,8 @@ _MODULE_IMPORTS: dict[str, str] = {
     "subfinder": "modules.subfinder_enum",
     "dnsx": "modules.dnsx_enum",
     "httpx": "modules.httpx_probe",
+    "synth": "modules.web_synthesis",
+    "nuclei": "modules.nuclei_scan",
     "arp": "modules.network.arp_scan",
     "sniff": "modules.network.packet_sniffer",
 }
@@ -355,8 +357,10 @@ _MODULE_ROWS: list[tuple[int, str, str, str]] = [
     (12, "subfinder", "Subfinder", "passive OSINT subdomain enum (requires subfinder)"),
     (13, "dnsx", "dnsx", "bulk DNS resolution + wildcard detection (requires dnsx)"),
     (14, "httpx", "httpx", "HTTP/HTTPS probe + tech fingerprint (requires httpx)"),
-    (15, "arp", "ARP scan", "CIDR only"),
-    (16, "sniff", "Packet sniffer", "CIDR / single IP"),
+    (15, "synth", "Web synthesis", "correlate dir_enum + url_harvester + js_recon"),
+    (16, "nuclei", "nuclei", "vulnerability templates (requires nuclei v3)"),
+    (17, "arp", "ARP scan", "CIDR only"),
+    (18, "sniff", "Packet sniffer", "CIDR / single IP"),
 ]
 
 
@@ -383,8 +387,8 @@ def _render_module_menu(target: Target) -> None:
         desc = Text(blurb, style=C_MUTED)
         console.print(Text.assemble(tag, name_part, desc))
 
-    core = _MODULE_ROWS[:14]
-    cidr_only = _MODULE_ROWS[14:]
+    core = _MODULE_ROWS[:16]
+    cidr_only = _MODULE_ROWS[16:]
 
     for mid, key, title, blurb in core:
         _line(mid, key, title, blurb)
@@ -408,12 +412,17 @@ def _render_module_menu(target: Target) -> None:
 
 
 # Menu keys for modules that need interactive operator input — never part of [0] RUN ALL.
-SKIP_IN_RUN_ALL: frozenset[str] = frozenset({"hash"})
+SKIP_IN_RUN_ALL: frozenset[str] = frozenset({"hash", "nuclei"})
 
 _HASH_SKIP_RUN_ALL_WARNING = (
     "Requires interactive input — select [9] individually when you have a hash to analyze."
 )
 _HASH_SKIP_RUN_ALL_REASON = "Requires interactive input — use [9] individually"
+
+_NUCLEI_SKIP_RUN_ALL_WARNING = (
+    "Requires profile selection and CONFIRM — select [16] individually."
+)
+_NUCLEI_SKIP_RUN_ALL_REASON = "Requires interactive nuclei authorization — use [16] individually"
 
 
 def _get_modules_for_run_all(target: Target) -> list[tuple[int, str, str]]:
@@ -1011,6 +1020,10 @@ def _mission_summary(
         lines.append(
             "[i] Hash module skipped — requires interactive input (use [9] individually)"
         )
+    if cfg.get("run_all") and target.supports("nuclei"):
+        lines.append(
+            "[i] nuclei skipped — requires profile + CONFIRM (use [16] individually)"
+        )
     body = "\n".join(lines)
     p = Panel(
         Text(body, style=C_DIM),
@@ -1249,6 +1262,57 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
         if nw:
             parts.append(f"{nw} warn")
         return " · ".join(parts)
+    if mod == "nuclei_scan":
+        st = res.get("status")
+        if st == "not_installed":
+            return "nuclei not installed"
+        if st == "skipped":
+            return None
+        if st == "error":
+            return None
+        stt = res.get("stats") or {}
+        n = int(stt.get("total_findings") or len(res.get("findings") or []))
+        tg = int(stt.get("targets_scanned") or 0)
+        prof = str(res.get("profile") or "—")
+        crit = len(res.get("critical_findings") or [])
+        high = len(res.get("high_findings") or [])
+        parts = [
+            f"{n} findings",
+            f"{crit} critical",
+            f"{high} high",
+            prof,
+            f"{tg} targets",
+            f"{stt.get('duration_s', res.get('duration_s', 0))}s",
+        ]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
+    if mod == "web_synthesis":
+        st = res.get("status")
+        if st == "skipped":
+            return None
+        stt = res.get("stats") or {}
+        u = int(res.get("total_unique") or stt.get("total_unique") or 0)
+        ms = int(res.get("multi_source") or stt.get("multi_source") or 0)
+        vh = int(res.get("vuln_hints_total") or stt.get("vuln_hints_total") or 0)
+        dur = stt.get("duration_s") or res.get("duration_s") or 0
+        parts = [
+            f"{u} unique",
+            f"{ms} multi-source",
+            f"{vh} vuln hints",
+            f"{dur}s",
+        ]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
     return None
 
 
@@ -1390,6 +1454,28 @@ def _run_modules_styled(
             elif status == "not_installed":
                 console.print(Text("     → httpx (ProjectDiscovery) not found", style=C_WARN))
             # Rich output from httpx_probe.run()
+        elif res.get("module") == "web_synthesis":
+            if status == "skipped":
+                console.print(
+                    Text(
+                        "     → skipped (no dir_enum / url_harvester / js_recon data, or CIDR)",
+                        style=C_WARN,
+                    )
+                )
+            # Rich output from web_synthesis.run()
+        elif res.get("module") == "nuclei_scan":
+            if status == "skipped":
+                console.print(
+                    Text(
+                        "     → skipped (RUN ALL / cancelled / CIDR, or no CONFIRM)",
+                        style=C_WARN,
+                    )
+                )
+            elif status == "not_installed":
+                console.print(
+                    Text("     → nuclei binary not found (install v3)", style=C_WARN)
+                )
+            # Rich output from nuclei_scan.run()
         elif status == "pending":
             console.print(
                 Text("     → not implemented yet (stub)", style=C_DIM)
@@ -1641,6 +1727,26 @@ def main() -> None:
                     "findings": [],
                     "error": None,
                     "result_hint": hint,
+                }
+            )
+        if sel_raw.strip() == "0" and target.supports("nuclei"):
+            hint_n = "use individually: select [16]"
+            raw_results["nuclei_scan"] = pack_session_result(
+                {
+                    "module": "nuclei_scan",
+                    "target": target.value,
+                    "status": ModuleStatus.SKIPPED.value,
+                    "warnings": [_NUCLEI_SKIP_RUN_ALL_WARNING],
+                    "skip_reason": _NUCLEI_SKIP_RUN_ALL_REASON,
+                }
+            )
+            results.append(
+                {
+                    "module": "nuclei",
+                    "status": "skipped",
+                    "findings": [],
+                    "error": None,
+                    "result_hint": hint_n,
                 }
             )
         has_port_or_whois = (

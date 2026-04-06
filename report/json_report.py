@@ -53,7 +53,7 @@ def generate(session: dict[str, Any], output_dir: str | Path) -> str:
         redacted_session["results"] = truncate_report_results(_res)
     report = {
         "ghostopcode": {
-            "version": getattr(app_config, "VERSION", "1.7.0"),
+            "version": getattr(app_config, "VERSION", "1.8.0"),
             "generated": datetime.now().isoformat(timespec="seconds"),
             "report_type": "recon_session",
         },

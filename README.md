@@ -1,6 +1,6 @@
 # GhostOpcode
 
-![Version](https://img.shields.io/badge/Version-1.7.0-orange?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.8.0-orange?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -12,13 +12,14 @@
 
 ## Features
 
-- **16 menu modules** + automatic **CVE lookup** (NVD) when port scan or WHOIS runs in the same session  
+- **18 menu modules** + automatic **CVE lookup** (NVD) when port scan or WHOIS runs in the same session  
 - **Target-aware menu**: modules show `[n]` or `[n/a]` depending on domain vs IP vs CIDR  
-- **Session chaining**: later modules read **`session_results`** (e.g. Subfinder → dnsx → httpx)  
+- **Session chaining**: later modules read **`session_results`** (e.g. Subfinder → dnsx → httpx → web synthesis → nuclei)  
 - **Subdomain intelligence chain** (modules 12–14): passive discovery → DNS validation → live HTTP(S) fingerprinting  
+- **Vulnerability validation chain** (modules 15–16): web synthesis correlation + nuclei template validation (CONFIRM required)  
 - **IP grouping & ASN hints** (Subfinder + wordlist subdomain enum) via `utils/asn_lookup.py` and `utils/subdomain_intel.py`  
 - **Graceful degradation**: external tools (Subfinder, dnsx, ProjectDiscovery httpx) report `not_installed` if binaries are missing  
-- **RUN ALL** (`0`): runs every supported module for the target except **Hash** (requires interactive hash input)  
+- **RUN ALL** (`0`): runs every supported module for the target except **Hash** (interactive hash input) and **nuclei** (profile selection + `CONFIRM`)  
 - **Output modes**: normal, quiet (high-value findings only), debug (subprocess / trace hints)  
 - **Redaction** and report caps (`utils/redact.py`, `utils/report_truncate.py`, limits in `config.py`)
 
@@ -63,8 +64,8 @@ Optional **`.env`** (repo root, gitignored):
 
 | Target | Available module keys |
 |--------|------------------------|
-| **Domain** | dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx |
-| **Single IP** | dns, whois, ports, dirs, harvest, methods, js, hash, waf, sniff |
+| **Domain** | dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx, synth, nuclei |
+| **Single IP** | dns, whois, ports, dirs, harvest, methods, js, hash, waf, sniff, synth, nuclei |
 | **CIDR** | arp, ports, sniff |
 
 ---
@@ -87,8 +88,10 @@ Optional **`.env`** (repo root, gitignored):
 | 12 | `subfinder` | Subfinder | Passive OSINT subdomains (**requires** [ProjectDiscovery Subfinder](https://github.com/projectdiscovery/subfinder) binary) + DNS enrichment + IP grouping / ASN |
 | 13 | `dnsx` | dnsx | Bulk DNS resolution + wildcard awareness (**requires** [dnsx](https://github.com/projectdiscovery/dnsx) binary); reads prior session `subfinder_enum` / `subdomain_enum` |
 | 14 | `httpx` | httpx | Mass HTTP/HTTPS probe (**requires** [ProjectDiscovery httpx](https://github.com/projectdiscovery/httpx) CLI, not the Python `httpx` package); prefers dnsx output, then subfinder, then subdomain enum |
-| 15 | `arp` | ARP scan | CIDR-only; **Scapy** |
-| 16 | `sniff` | Packet sniffer | IP or CIDR; **Scapy** capture |
+| 15 | `synth` | Web synthesis | Correlates **dir_enum**, **url_harvester**, and **js_recon** findings into a unified attack surface. Deduplicates by normalized path, merges sources, computes **interest score** (sources×2 + vuln_hints×3 + params×1 + risk weight). Endpoints confirmed by 2+ sources highlighted. Runs automatically in **RUN ALL** after source modules. |
+| 16 | `nuclei` | nuclei | Vulnerability template scan via **nuclei v3** ([ProjectDiscovery nuclei](https://github.com/projectdiscovery/nuclei)). Three profiles: Exposure (fast), CVE scan (recommended), Full scan (thorough). Requires **CONFIRM** from operator. Uses URLs from httpx / web_synthesis / subfinder as targets. **-no-interactsh** — 100% local, no external callbacks. **Skipped in RUN ALL**. |
+| 17 | `arp` | ARP scan | CIDR-only; **Scapy** |
+| 18 | `sniff` | Packet sniffer | IP or CIDR; **Scapy** capture |
 
 **CVE lookup** is **not** a menu ID: it runs automatically after the session if **port scan** or **WHOIS** produced usable data, using the NVD API (`modules/cve_lookup.py`).
 
@@ -113,6 +116,48 @@ Select together: **`12 13 14`**.
 
 ---
 
+## Vulnerability validation chain
+
+Modules **15 → 16** close the intelligence loop — correlating collected data and validating real vulnerabilities:
+
+```
+[15] Web synthesis  →  thousands of raw entries correlated
+         ↓              dir_enum + url_harvester + js_recon
+         ↓              → unique endpoints with interest score
+         ↓              → multi-source confirmation
+         ↓              → vulnerability hints (SQLi, LFI, IDOR…)
+[16] nuclei         →  CVEs and exposures validated
+                        with 9,000+ community templates
+                        → CVE ID + CVSS score + evidence
+                        → 100% local (-no-interactsh)
+```
+
+**Full session — domain to confirmed CVE:**
+
+```bash
+→ select: 5 8 11 15 16
+# dir_enum + js_recon + url_harvester → web_synthesis → nuclei
+```
+
+Or the complete chain from discovery to validation:
+
+```bash
+→ select: 12 13 14 15 16
+# subfinder → dnsx → httpx → web_synthesis → nuclei
+```
+
+**nuclei scan profiles:**
+
+| Profile | Templates | Speed | Use when |
+|---------|-----------|-------|----------|
+| Exposure | exposures, misconfigs | Fast | First contact, low noise |
+| CVE scan | cve | Medium | Known CVEs — recommended default |
+| Full scan | cve, exposure, takeover | Slow | Full coverage, authorized scope |
+
+nuclei is always skipped in **RUN ALL** — it requires an interactive **CONFIRM** from the operator before running active templates.
+
+---
+
 ## External binaries (optional)
 
 | Binary | Typical install | Used by |
@@ -120,6 +165,7 @@ Select together: **`12 13 14`**.
 | **subfinder** | `apt install subfinder` or `go install … subfinder@latest` | Module 12 |
 | **dnsx** | `apt install dnsx` or ProjectDiscovery release | Module 13 |
 | **httpx** (ProjectDiscovery) | Release binary or `go install … httpx@latest` — must **not** be confused with `pip install httpx` | Module 14 |
+| **nuclei** v3 (ProjectDiscovery) | `apt install nuclei` or `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` | Module [16] |
 | **nmap** | `apt install nmap` | Module 4 (nmap phase) |
 | **hashcat** | `apt install hashcat` | Module 9 (optional cracking) |
 
@@ -194,6 +240,7 @@ Outputs are designed for authorized reporting; use **`redact`**-aware exports wh
 
 | Version | Highlights |
 |---------|------------|
+| **v1.8.0** | Web intelligence + vulnerability validation: **[15] web synthesis** — correlation engine for dir_enum + url_harvester + js_recon, interest score, multi-source deduplication, vuln hints · **[16] nuclei** — 3 scan profiles, CONFIRM required, -no-interactsh, CVE-2023-48795 confirmed on scanme.nmap.org · HTML report sections for both modules · README rewritten in English |
 | **1.7.0** | Subdomain chain: Subfinder + **dnsx** + **httpx**; **asn_lookup** / **subdomain_intel**; session wiring; README alignment |
 | 1.6.0 | Redaction, TLS options, caches, memory limits, path hardening, email auth intel (SPF/DMARC/DKIM), nmap levels, hash skipped in RUN ALL |
 | 1.5.0 | Email DNS parsers, quiet/debug modes, base_module refactor |
@@ -207,4 +254,4 @@ See **`LICENSE.md`** (MIT unless stated otherwise in that file).
 
 ---
 
-*GhostOpcode v1.7.0 — local offensive recon framework*
+*GhostOpcode v1.8.0 — local offensive recon framework*

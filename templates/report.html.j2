@@ -193,6 +193,9 @@
       letter-spacing: 0.04em;
     }
     table.data tbody tr:hover td { background: rgba(0, 255, 65, 0.035); }
+    table.data tbody tr.multi-source td:first-child {
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
 
     .badge {
       display: inline-block;
@@ -1098,6 +1101,108 @@
   {% endif %}
   <details class="json-raw"><summary>JSON completo — URL harvester</summary>{{ results.url_harvester | json_pretty }}</details>
 </section>
+{% endif %}
+
+{# --- Web synthesis --- #}
+{% if results.get('web_synthesis') and results.web_synthesis.status == 'success' %}
+{% set ws = results.web_synthesis %}
+{% set wstop = ws.top_endpoints | default([]) %}
+{% if wstop %}
+<section class="module" id="web-synthesis">
+  <h2>Web surface synthesis</h2>
+  <span class="status-pill">Status: {{ ws.status | e }}</span>
+  <p class="muted">
+    <strong>{{ ws.total_unique | default(0) }}</strong> unique endpoints
+    · <strong>{{ ws.multi_source | default(0) }}</strong> confirmed by 2+ sources
+    · <strong>{{ ws.vuln_hints_total | default(0) }}</strong> with vulnerability hints
+    · sources: {{ (ws.sources_used | default([])) | join(' + ') | e }}
+  </p>
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Path</th>
+        <th>Sources</th>
+        <th>Parameters</th>
+        <th>Vuln hints</th>
+        <th>Risk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ep in wstop %}
+      <tr class="{{ (ep.risk | string | lower) | e }}{% if ep.source_count | default(0) >= 2 %} multi-source{% endif %}">
+        <td class="mono">{{ ep.path | default('—') | e }}</td>
+        <td>{{ (ep.sources | default([])) | join(' + ') | e }}</td>
+        <td class="cell-long">{% set pp = ep.params | default([]) %}{% if pp %}{{ (pp[:3] | join(', ')) | e }}{% if pp | length > 3 %}…{% endif %}{% else %}—{% endif %}</td>
+        <td class="cell-long">{% set vh = ep.vuln_hints | default([]) %}{% if vh %}{{ (vh[:2] | join(', ')) | e }}{% if vh | length > 2 %}…{% endif %}{% else %}—{% endif %}</td>
+        <td><span class="badge {{ (ep.risk | string | lower) | e }}">{{ ep.risk | default('LOW') | e }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if ws.warnings | default([]) %}
+  <h3>Avisos</h3>
+  <ul class="compact">{% for w in ws.warnings %}<li>{{ w | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — Web synthesis</summary>{{ ws | json_pretty }}</details>
+</section>
+{% endif %}
+{% endif %}
+
+{# --- nuclei scan --- #}
+{% if results.get('nuclei_scan') %}
+{% set nuc = results.nuclei_scan %}
+{% set nuc_findings = nuc.findings | default((nuc.data | default({})).findings | default([])) %}
+{% if nuc_findings and (nuc_findings | length) > 0 %}
+<section class="module" id="nuclei-scan">
+  <h2>nuclei scan</h2>
+  <span class="status-pill">Status: {{ nuc.status | e }}</span>
+  {% set nst = nuc.stats | default((nuc.data | default({})).stats | default({})) %}
+  <p class="muted">
+    <strong>{{ nuc_findings | length }}</strong> findings
+    · <strong>{{ nst.targets_scanned | default('—') }}</strong> targets scanned
+    · profile: <strong>{{ nuc.profile | default((nuc.data | default({})).profile | default('—')) | e }}</strong>
+  </p>
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Template</th>
+        <th>Host</th>
+        <th>CVE</th>
+        <th>CVSS</th>
+        <th>Severity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in nuc_findings %}
+      {% set tmpl = f.name | default(f.template_id | default('—')) %}
+      {% set tid = f.template_id | default('') %}
+      {% set host_cell = f.matched_at | default(f.host | default('—')) %}
+      {% set cve_list = f.cves | default([]) %}
+      {% set cvss_v = f.cvss %}
+      {% set sev_raw = (f.severity | default('') | string | lower) %}
+      {% set risk_raw = (f.risk | default('LOW') | string | lower) %}
+      {% set _bc = sev_raw if sev_raw in ['critical','high','medium','low','info'] else risk_raw %}
+      {% set badge_class = _bc if _bc in ['critical','high','medium','low','info'] else 'low' %}
+      <tr class="{{ badge_class | e }}">
+        <td>
+          <div class="mono" style="font-size:0.82em;">{{ tmpl | e }}</div>
+          {% if tid %}<div class="muted" style="font-size:0.72rem;margin-top:0.2rem;">{{ tid | e }}</div>{% endif %}
+        </td>
+        <td class="mono cell-long">{{ host_cell | e }}</td>
+        <td class="mono">{% if cve_list | length > 0 %}{{ cve_list[0] | e }}{% if cve_list | length > 1 %} <span class="muted">+{{ (cve_list | length) - 1 }}</span>{% endif %}{% else %}—{% endif %}</td>
+        <td style="text-align:center;">{% if cvss_v is not none and (cvss_v | string | trim) != '' %}{{ cvss_v | e }}{% else %}—{% endif %}</td>
+        <td><span class="badge {{ badge_class | e }}">{{ (f.severity | default(f.risk | default('—')) | string | upper) | e }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if nuc.warnings | default([]) %}
+  <h3>Avisos</h3>
+  <ul class="compact">{% for w in nuc.warnings %}<li>{{ w | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — nuclei scan</summary>{{ nuc | json_pretty }}</details>
+</section>
+{% endif %}
 {% endif %}
 
 {# --- Subfinder enum --- #}
