@@ -1,83 +1,75 @@
 # Security Policy
 
-## Uso Autorizado
+## Authorized use
 
-GhostOpcode é uma ferramenta de reconhecimento ofensivo
-desenvolvida exclusivamente para uso em ambientes autorizados.
+GhostOpcode is an offensive reconnaissance tool intended **only** for use in **authorized** environments.
 
-**O uso deste software implica a aceitação integral das seguintes condições:**
+**By using this software you accept all of the following:**
 
-- Você possui autorização explícita e por escrito do proprietário
-  do sistema alvo antes de qualquer execução
-- Você é o único responsável pelo uso que fizer desta ferramenta
-- Os autores não se responsabilizam por uso indevido, ilegal
-  ou não autorizado sob nenhuma circunstância
-- O uso não autorizado pode constituir crime nos termos da
-  Lei Geral de Proteção de Dados (LGPD), Lei de Crimes
-  Informáticos (Lei 12.737/2012) e legislações equivalentes
-  em outras jurisdições
+- You have **explicit written permission** from the owner of any target system **before** you run the tool
+- You are **solely responsible** for how you use this software
+- The authors **accept no liability** for misuse, illegal use, or unauthorized use **under any circumstances**
+- Unauthorized use may be a criminal offense under Brazil’s **LGPD** (General Data Protection Law), **Law 12.737/2012** (computer-crime statute), and comparable laws in other jurisdictions
 
 ---
 
-## Versões Suportadas
+## Supported versions
 
-| Versão | Suportada          |
-|--------|--------------------|
-| 1.9.x  | ✅ atual           |
-| 1.8.x  | ✅ correções críticas |
-| < 1.8  | ❌ sem suporte     |
-
----
-
-## Reportando Vulnerabilidades no GhostOpcode
-
-Se você encontrou uma vulnerabilidade de segurança no próprio
-código do GhostOpcode (não em alvos externos), siga o processo
-de disclosure responsável:
-
-### O que reportar
-- Vulnerabilidades que permitam execução de código arbitrário
-- Falhas que exponham dados sensíveis do operador
-- Bypass de controles de segurança do framework
-- Dependências com CVEs críticos
-
-### Como reportar
-1. **Não abra uma Issue pública** com detalhes da vulnerabilidade
-2. Abra uma Issue com título `[SECURITY] descrição genérica`
-   ou entre em contato diretamente com o mantenedor
-3. Inclua: descrição, passos para reproduzir, impacto estimado,
-   versão afetada
-
-### O que esperar
-- Confirmação de recebimento em até 72 horas
-- Avaliação e classificação de severidade
-- Patch na próxima release se confirmada
-- Crédito no changelog se desejado
+| Version | Supported |
+|---------|-----------|
+| 1.9.x | ✅ Current |
+| 1.8.x | ✅ Critical fixes only |
+| Pre-1.8 | ❌ Unsupported |
 
 ---
 
-## Boas Práticas de Uso
+## Reporting vulnerabilities in GhostOpcode
+
+If you find a **security vulnerability in GhostOpcode itself** (not in third-party targets), please follow **responsible disclosure**:
+
+### What to report
+
+- Issues that allow **arbitrary code execution**
+- Flaws that **expose sensitive operator data**
+- **Bypasses** of framework security controls
+- **Critical CVEs** in bundled or documented dependencies
+
+### How to report
+
+1. **Do not** open a **public** issue with exploit details
+2. Open an issue titled **`[SECURITY] short generic summary`** or contact the maintainer **privately**
+3. Include: description, **steps to reproduce**, estimated impact, and **affected version(s)**
+
+### What to expect
+
+- Acknowledgement within **72 hours** (best effort)
+- Triage and severity assessment
+- A fix in a **future release** if the issue is confirmed
+- **Credit in the changelog** if you want it
+
+---
+
+## Safe usage practices
 
 ```bash
-# Sempre confirme autorização antes de qualquer módulo ativo
-# O GhostOpcode exige CONFIRM explícito para módulos invasivos:
-# nuclei, port scan vuln, packet sniffer
+# Always confirm authorization before running active modules.
+# GhostOpcode requires explicit CONFIRM for invasive modules, e.g.:
+# nuclei, port scan (vuln level), packet sniffer
 
-# Armazene outputs com controle de acesso
+# Restrict access to session output
 chmod 700 output/
 
-# Não commite arquivos de output com dados de alvos reais
+# Do not commit real target data from output/
 echo "output/" >> .gitignore
 ```
 
 ---
 
-## Contato
+## Contact
 
-Mantenedor: **GhostOpcode Project**  
-Repositório: `git@github.com:JuanTrentinTelli/ghostopcode.git`
+Maintainer: **GhostOpcode Project**  
+Repository: `git@github.com:JuanTrentinTelli/ghostopcode.git`
 
 ---
 
-*Este projeto segue os princípios de Ethical Hacking e
-Responsible Disclosure. Use com responsabilidade.*
+*This project follows **ethical hacking** and **responsible disclosure** principles. Use it responsibly.*
