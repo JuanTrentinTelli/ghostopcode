@@ -1205,6 +1205,56 @@
 {% endif %}
 {% endif %}
 
+{# --- vhost scan --- #}
+{% if results.get('vhost_scan') %}
+{% set vs = results.vhost_scan %}
+{% set vhosts = vs.vhosts | default((vs.data | default({})).vhosts | default([])) %}
+{% if vhosts and (vhosts | length) > 0 %}
+<section class="module" id="vhost-scan">
+  <h2>Virtual host discovery</h2>
+  <span class="status-pill">Status: {{ vs.status | e }}</span>
+  {% set vst = vs.stats | default((vs.data | default({})).stats | default({})) %}
+  <p class="muted">
+    <strong>{{ vhosts | length }}</strong> virtual host(s)
+    · <strong>{{ vst.ips_tested | default('—') }}</strong> IPs tested
+    · wordlist: <strong>{{ vs.wordlist | default((vs.data | default({})).wordlist | default('—')) | e }}</strong>
+    · words loaded: <strong>{{ vs.words_used | default((vs.data | default({})).words_used | default('—')) }}</strong>
+  </p>
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Hostname</th>
+        <th>IP</th>
+        <th>Port</th>
+        <th>Status</th>
+        <th>Title</th>
+        <th>Risk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for v in vhosts %}
+      {% set rsk = (v.risk | default('LOW') | string | lower) %}
+      {% set badge_class = rsk if rsk in ['critical','high','medium','low'] else 'low' %}
+      <tr class="{{ badge_class | e }}">
+        <td class="mono">{{ v.hostname | default('—') | e }}</td>
+        <td class="mono">{{ v.ip | default('—') | e }}</td>
+        <td style="text-align:center;">{{ v.port | default('—') | e }}</td>
+        <td style="text-align:center;">{{ v.status | default('—') | e }}</td>
+        <td class="cell-long">{{ (v.title | default('—')) | e }}</td>
+        <td><span class="badge {{ badge_class | e }}">{{ v.risk | default('LOW') | e }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if vs.warnings | default([]) %}
+  <h3>Avisos</h3>
+  <ul class="compact">{% for w in vs.warnings %}<li>{{ w | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — vhost scan</summary>{{ vs | json_pretty }}</details>
+</section>
+{% endif %}
+{% endif %}
+
 {# --- Subfinder enum --- #}
 {% if results.get('subfinder_enum') and results.subfinder_enum.status not in ['skipped'] %}
 <section class="module" id="subfinder">

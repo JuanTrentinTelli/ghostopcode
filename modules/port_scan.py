@@ -34,6 +34,13 @@ from config import DEFAULT_THREADS, DEFAULT_TIMEOUT
 from utils.base_module import make_finding
 from utils.dns_cache import resolve as dns_resolve
 from utils.output import debug_log, display_findings
+from utils.searchsploit import (
+    display_exploit_enrichment,
+    is_available as searchsploit_available,
+    normalize_cve_id,
+    search_cve,
+    summarize as sploit_summarize,
+)
 from utils.target_parser import Target
 
 try:
@@ -1634,6 +1641,37 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             ) = _script_findings_from_nmap_map(nmap_map, run_level)
             base["script_hits"] = script_hits
             base["vuln_hits"] = vuln_hits
+
+            if vuln_hits and searchsploit_available():
+                disp_vuln: list[dict[str, Any]] = []
+                seen_vuln_cve: set[str] = set()
+                for vh in vuln_hits:
+                    raw_cve = vh.get("cve")
+                    if not raw_cve:
+                        continue
+                    spl = search_cve(str(raw_cve), timeout=5)
+                    if not spl:
+                        continue
+                    summ = sploit_summarize(spl)
+                    vh["exploits"] = spl
+                    vh["exploit_summary"] = summ
+                    vh["exploit_count"] = len(spl)
+                    prev = str(vh.get("note") or "")
+                    vh["note"] = (
+                        f"{prev} | ExploitDB: {summ}"
+                    ).lstrip(" | ")
+                    nid = normalize_cve_id(str(raw_cve))
+                    if nid and nid not in seen_vuln_cve:
+                        seen_vuln_cve.add(nid)
+                        disp_vuln.append(
+                            {
+                                "cve_id": nid,
+                                "exploits": spl,
+                                "exploit_summary": summ,
+                            }
+                        )
+                if disp_vuln and not quiet:
+                    display_exploit_enrichment(disp_vuln, console)
 
             def _merge_findings(key: str, items: list[dict[str, Any]]) -> None:
                 if not items:

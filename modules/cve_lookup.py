@@ -133,6 +133,13 @@ from rich.text import Text
 
 from utils.http_client import make_session
 from utils.output import debug_log, display_findings
+from utils.searchsploit import (
+    display_exploit_enrichment,
+    is_available as searchsploit_available,
+    normalize_cve_id,
+    search_many,
+    summarize as sploit_summarize,
+)
 
 load_dotenv()
 
@@ -942,6 +949,57 @@ def run(session_results: dict[str, Any], config: dict[str, Any]) -> dict[str, An
                 "has_kev": has_kev,
             }
         )
+
+    if not auth_failed and searchsploit_available():
+        cve_ids = []
+        for f in findings:
+            for c in f.get("cves") or []:
+                cid = c.get("cve_id")
+                if cid:
+                    cve_ids.append(str(cid))
+        sploit_map = search_many(cve_ids, timeout=5)
+        for f in findings:
+            for c in f.get("cves") or []:
+                cid = normalize_cve_id(str(c.get("cve_id") or ""))
+                if not cid:
+                    continue
+                sploits = sploit_map.get(cid, [])
+                if sploits:
+                    c["exploits"] = sploits
+                    c["exploit_summary"] = sploit_summarize(sploits)
+                    c["exploit_count"] = len(sploits)
+                    existing = str(c.get("description") or "")
+                    summ = sploit_summarize(sploits)
+                    c["description"] = (
+                        f"{existing} | ExploitDB: {summ}"
+                    ).lstrip(" | ")
+        for row in flat_rows:
+            cid = normalize_cve_id(str(row.get("cve_id") or ""))
+            if not cid:
+                continue
+            sploits = sploit_map.get(cid, [])
+            if sploits:
+                row["exploits"] = sploits
+                row["exploit_summary"] = sploit_summarize(sploits)
+                row["exploit_count"] = len(sploits)
+        display_list: list[dict[str, Any]] = []
+        seen_disp: set[str] = set()
+        for row in flat_rows:
+            cid = normalize_cve_id(str(row.get("cve_id") or ""))
+            if not cid or not row.get("exploits"):
+                continue
+            if cid in seen_disp:
+                continue
+            seen_disp.add(cid)
+            display_list.append(
+                {
+                    "cve_id": cid,
+                    "exploits": row["exploits"],
+                    "exploit_summary": row["exploit_summary"],
+                }
+            )
+        if display_list and not quiet:
+            display_exploit_enrichment(display_list, console)
 
     if auth_failed:
         base["status"] = "error"

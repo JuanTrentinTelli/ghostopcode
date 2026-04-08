@@ -1,6 +1,6 @@
 # GhostOpcode
 
-![Version](https://img.shields.io/badge/Version-1.8.0-orange?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.9.0-orange?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -12,7 +12,7 @@
 
 ## Features
 
-- **18 menu modules** + automatic **CVE lookup** (NVD) when port scan or WHOIS runs in the same session  
+- **19 menu modules** + automatic **CVE lookup** (NVD) when port scan or WHOIS runs in the same session  
 - **Target-aware menu**: modules show `[n]` or `[n/a]` depending on domain vs IP vs CIDR  
 - **Session chaining**: later modules read **`session_results`** (e.g. Subfinder → dnsx → httpx → web synthesis → nuclei)  
 - **Subdomain intelligence chain** (modules 12–14): passive discovery → DNS validation → live HTTP(S) fingerprinting  
@@ -64,7 +64,7 @@ Optional **`.env`** (repo root, gitignored):
 
 | Target | Available module keys |
 |--------|------------------------|
-| **Domain** | dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx, synth, nuclei |
+| **Domain** | dns, subs, whois, ports, dirs, harvest, methods, js, hash, waf, urls, subfinder, dnsx, httpx, synth, nuclei, vhost |
 | **Single IP** | dns, whois, ports, dirs, harvest, methods, js, hash, waf, sniff, synth, nuclei |
 | **CIDR** | arp, ports, sniff |
 
@@ -90,8 +90,9 @@ Optional **`.env`** (repo root, gitignored):
 | 14 | `httpx` | httpx | Mass HTTP/HTTPS probe (**requires** [ProjectDiscovery httpx](https://github.com/projectdiscovery/httpx) CLI, not the Python `httpx` package); prefers dnsx output, then subfinder, then subdomain enum |
 | 15 | `synth` | Web synthesis | Correlates **dir_enum**, **url_harvester**, and **js_recon** findings into a unified attack surface. Deduplicates by normalized path, merges sources, computes **interest score** (sources×2 + vuln_hints×3 + params×1 + risk weight). Endpoints confirmed by 2+ sources highlighted. Runs automatically in **RUN ALL** after source modules. |
 | 16 | `nuclei` | nuclei | Vulnerability template scan via **nuclei v3** ([ProjectDiscovery nuclei](https://github.com/projectdiscovery/nuclei)). Three profiles: Exposure (fast), CVE scan (recommended), Full scan (thorough). Requires **CONFIRM** from operator. Uses URLs from httpx / web_synthesis / subfinder as targets. **-no-interactsh** — 100% local, no external callbacks. **Skipped in RUN ALL**. |
-| 17 | `arp` | ARP scan | CIDR-only; **Scapy** |
-| 18 | `sniff` | Packet sniffer | IP or CIDR; **Scapy** capture |
+| 17 | `vhost` | vhost scan | Virtual host discovery: **SecLists** DNS wordlists (auto-detected) + session **ip_grouping** from subfinder/subdomain enum; **Host** header probes vs baseline (status, length, title). **Domain targets only.** |
+| 18 | `arp` | ARP scan | CIDR-only; **Scapy** |
+| 19 | `sniff` | Packet sniffer | IP or CIDR; **Scapy** capture |
 
 **CVE lookup** is **not** a menu ID: it runs automatically after the session if **port scan** or **WHOIS** produced usable data, using the NVD API (`modules/cve_lookup.py`).
 
@@ -166,6 +167,9 @@ nuclei is always skipped in **RUN ALL** — it requires an interactive **CONFIRM
 | **dnsx** | `apt install dnsx` or ProjectDiscovery release | Module 13 |
 | **httpx** (ProjectDiscovery) | Release binary or `go install … httpx@latest` — must **not** be confused with `pip install httpx` | Module 14 |
 | **nuclei** v3 (ProjectDiscovery) | `apt install nuclei` or `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` | Module [16] |
+| **ffuf** | `apt install ffuf` or [ffuf releases](https://github.com/ffuf/ffuf) | Module **[5]** dir enum — primary engine when available (Python fallback if missing) |
+| **searchsploit** / **ExploitDB** | `apt install exploitdb` (Kali) — local DB under `/usr/share/exploitdb/` | CVE exploit enrichment (cve_lookup, port_scan vuln, nuclei) — optional, offline |
+| **SecLists** (DNS subdomains) | `apt install seclists` — used by **[17] vhost scan** (`Discovery/DNS/subdomains-top1million-5000.txt` preferred) | Module [17] |
 | **nmap** | `apt install nmap` | Module 4 (nmap phase) |
 | **hashcat** | `apt install hashcat` | Module 9 (optional cracking) |
 
@@ -232,7 +236,8 @@ Outputs are designed for authorized reporting; use **`redact`**-aware exports wh
 
 - Only test systems you **own** or have **written permission** to assess.  
 - Do not commit **`.env`**, **`output/`**, secrets, or raw credentials.  
-- Review **`MAX_*`** limits before very large scopes.
+- Review **`MAX_*`** limits before very large scopes.  
+- Full policy, supported versions, and responsible disclosure: see **`SECURITY.md`**.
 
 ---
 
@@ -240,11 +245,80 @@ Outputs are designed for authorized reporting; use **`redact`**-aware exports wh
 
 | Version | Highlights |
 |---------|------------|
+| **v1.9.0** | **Velocity & depth:** **[17] vhost scan** (Host header, SecLists, CDN baseline, `ip_grouping`) · **ExploitDB enrichment** (`utils/searchsploit.py` — offline `searchsploit --json` in cve_lookup, port_scan vuln, nuclei) · **ffuf** as primary **dir enum** engine with Python fallback + empirical catch-all filter (dominant response size, more than 30% of hits) · **pytest** parsers (`tests/test_parsers.py`, 17 tests) · terminal clear via ANSI (no `os.system("clear")`) · **`SECURITY.md`** |
 | **v1.8.0** | Web intelligence + vulnerability validation: **[15] web synthesis** — correlation engine for dir_enum + url_harvester + js_recon, interest score, multi-source deduplication, vuln hints · **[16] nuclei** — 3 scan profiles, CONFIRM required, -no-interactsh, CVE-2023-48795 confirmed on scanme.nmap.org · HTML report sections for both modules · README rewritten in English |
 | **1.7.0** | Subdomain chain: Subfinder + **dnsx** + **httpx**; **asn_lookup** / **subdomain_intel**; session wiring; README alignment |
 | 1.6.0 | Redaction, TLS options, caches, memory limits, path hardening, email auth intel (SPF/DMARC/DKIM), nmap levels, hash skipped in RUN ALL |
 | 1.5.0 | Email DNS parsers, quiet/debug modes, base_module refactor |
 | ≤ 1.4.x | WAF, URL harvester, Subfinder, CVE automation, earlier module set |
+
+### v1.9.0 (detail)
+
+#### [17] Virtual Host Discovery (`modules/vhost_scan.py`)
+
+Discovers web services that exist on the server but may not have public DNS. Uses **ip_grouping** from Subfinder / subdomain enum to prioritize IPs with the most services, then probes hostnames via **`Host`** header manipulation.
+
+- Wordlist auto-detected from **SecLists** (`subdomains-top1million-5000.txt` preferred)
+- **CDN baseline filter** — Cloudflare and similar fingerprints ignored automatically
+- Detection via response **length**, **status**, and **page title**
+- Session **`ip_grouping`** integration (top IPs by service count)
+
+**Real-world example (Viasoft):** `openerp.viasoft.com.br → 34.102.182.40 → 200 · HIGH` — hostname not published in public DNS, found via vhost scan.
+
+---
+
+#### ExploitDB enrichment (`utils/searchsploit.py`)
+
+Automatic CVE enrichment from the **local** ExploitDB database. Wired into **`cve_lookup`**, **`port_scan`** (nmap vuln scripts), and **`nuclei_scan`**.
+
+- **100% offline** — uses Kali’s `/usr/share/exploitdb/` via the `searchsploit` binary
+- **Session cache** with `threading.Lock` — no duplicate subprocesses for the same CVE
+- **JSON output** (`searchsploit --json`) — structured parse, no fragile regex
+- **Graceful degradation** — `is_available()` false → modules run without enrichment, no hard failure
+- Terminal shows **up to 3 exploits per CVE**; **HTML/JSON** keep the full list
+
+**Example output:**
+
+```
+CVE-2017-5638 → 2 exploits (remote, webapps)
+CVE-2021-44228 → 3 exploits (remote × 3)
+```
+
+*(Counts depend on your local ExploitDB revision.)*
+
+---
+
+#### ffuf as dir enum engine (`modules/dir_enum.py`)
+
+**ffuf** (Go) is the **primary** directory-enumeration engine when the binary is on `PATH`. The original **Python/httpx** engine remains as an **automatic fallback**.
+
+- **Auto-detection:** ffuf present → ffuf · absent → silent fallback to Python
+- **JSON output** (`-of json`) for stable parsing
+- **Empirical catch-all filter:** if one response size accounts for **more than 30%** of hits, treat it as wildcard noise and drop paths within **±2000 B** of that size
+- **Speed:** Fast mode on large wordlists is typically **much faster** with ffuf than pure Python
+
+**Example (aggressive catch-all target):**
+
+```
+Before filter: 5000 paths · 338 critical (mostly noise)
+After filter:   348 paths ·  24 critical (actionable)
+— thousands of same-size wildcard responses collapsed via dominant-length filter
+```
+
+---
+
+#### Unit tests (`tests/test_parsers.py`)
+
+Minimal **pytest** suite for three critical parsers (no network, no mocks).
+
+- **`TestParseTarget`** — 7 tests (DOMAIN, IP, CIDR, invalid inputs)
+- **`TestParseSPF`** — 7 tests (full `-all` / `~all` / `?all` / `+all` / empty table)
+- **`TestPackSessionResult`** — 3 tests (contract shape, target preserved, empty findings)
+
+```bash
+pytest tests/test_parsers.py -v
+# 17 passed (typically under ~2s locally, depending on import cost)
+```
 
 ---
 
@@ -254,4 +328,4 @@ See **`LICENSE.md`** (MIT unless stated otherwise in that file).
 
 ---
 
-*GhostOpcode v1.8.0 — local offensive recon framework*
+*GhostOpcode v1.9.0 — local offensive recon framework*

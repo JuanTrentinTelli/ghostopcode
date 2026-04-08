@@ -36,6 +36,7 @@ MODULE_LABELS: dict[str, str] = {
     "httpx_probe": "httpx Probe",
     "web_synthesis": "Web Synthesis",
     "nuclei_scan": "nuclei Scan",
+    "vhost_scan": "vhost Scan",
     "arp_scan": "ARP Scan",
     "packet_sniffer": "Packet Sniffer",
     "cve_lookup": "CVE Lookup (NVD)",

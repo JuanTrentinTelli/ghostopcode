@@ -20,6 +20,13 @@ from rich.text import Text
 
 from utils.base_module import make_finding
 from utils.output import debug_log
+from utils.searchsploit import (
+    display_exploit_enrichment,
+    is_available as searchsploit_available,
+    normalize_cve_id,
+    search_cve,
+    summarize as sploit_summarize,
+)
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -461,6 +468,56 @@ def parse_nuclei_findings(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return parsed
 
 
+def _enrich_nuclei_exploits(rows: list[dict[str, Any]]) -> None:
+    if not rows or not searchsploit_available():
+        return
+    for row in rows:
+        cves = row.get("cves") or []
+        if not cves:
+            continue
+        all_sploits: list[dict[str, Any]] = []
+        seen_edb: set[str] = set()
+        for cve_id in cves:
+            for ex in search_cve(str(cve_id), timeout=5):
+                eid = str(ex.get("edb_id") or "").strip() or str(
+                    ex.get("title") or ""
+                )
+                if eid in seen_edb:
+                    continue
+                seen_edb.add(eid)
+                all_sploits.append(ex)
+        if all_sploits:
+            row["exploits"] = all_sploits
+            row["exploit_summary"] = sploit_summarize(all_sploits)
+            row["exploit_count"] = len(all_sploits)
+
+
+def _display_nuclei_exploit_block(findings: list[dict[str, Any]], quiet: bool) -> None:
+    if quiet or not searchsploit_available():
+        return
+    disp: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for f in findings:
+        if not f.get("exploits"):
+            continue
+        cves_l = f.get("cves") or []
+        cid = normalize_cve_id(str(cves_l[0])) if cves_l else ""
+        if not cid:
+            cid = "unknown"
+        if cid in seen:
+            continue
+        seen.add(cid)
+        disp.append(
+            {
+                "cve_id": cid,
+                "exploits": f["exploits"],
+                "exploit_summary": f.get("exploit_summary") or "",
+            }
+        )
+    if disp:
+        display_exploit_enrichment(disp, console)
+
+
 def _display_findings(findings: list[dict[str, Any]], quiet: bool) -> None:
     if quiet or not findings:
         return
@@ -474,6 +531,7 @@ def _display_findings(findings: list[dict[str, Any]], quiet: bool) -> None:
     table.add_column("CVE", style=C_MUTED, max_width=16)
     table.add_column("CVSS", justify="center", width=6)
     table.add_column("Risk", justify="center", width=10)
+    table.add_column("ExploitDB", style=C_MUTED, max_width=22)
 
     for f in findings[:25]:
         risk = f.get("risk") or "LOW"
@@ -491,12 +549,14 @@ def _display_findings(findings: list[dict[str, Any]], quiet: bool) -> None:
         if len(host) > 32:
             host = host[:29] + "..."
 
+        ex_note = str(f.get("exploit_summary") or "")[:22] or "—"
         table.add_row(
             str(f.get("name") or "")[:30],
             host,
             cve[:16],
             cvss,
             Text(str(risk), style=risk_color),
+            ex_note,
         )
 
     console.print(table)
@@ -627,6 +687,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         base["warnings"].append(run_err)
 
     findings = parse_nuclei_findings(raw)
+    _enrich_nuclei_exploits(findings)
     base["findings"] = findings
     base["stats"]["total_findings"] = len(findings)
 
@@ -636,6 +697,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
 
     _display_findings(findings, quiet)
+    _display_nuclei_exploit_block(findings, quiet)
 
     findings_flat: list[dict[str, Any]] = []
     for row in findings:
@@ -646,6 +708,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             note = f"{note} — {cves}"
         if row.get("cvss") is not None and str(row.get("cvss")).strip():
             note = f"{note} (CVSS {row['cvss']})"
+        if row.get("exploit_summary"):
+            note = f"{note} — ExploitDB: {row['exploit_summary']}"
 
         cat = f"nuclei_{row['template_id']}" if row.get("template_id") else "nuclei"
         fd = make_finding(

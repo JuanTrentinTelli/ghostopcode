@@ -46,6 +46,10 @@ WORDLIST_SUBDOMAINS = resolve_wordlist(
     ]
 )
 
+# Virtual host scan — optional path override; None = auto (SecLists DNS lists in vhost_scan)
+WORDLIST_VHOSTS: str | None = None
+VHOST_WORDLIST_LIMIT = 5_000  # max words loaded from file per vhost_scan run
+
 # Fast dir enum (~5k paths) — prefer SecLists common.txt
 WORDLIST_DIRS_FAST = resolve_wordlist(
     [
@@ -142,7 +146,7 @@ USER_AGENT = DEFAULT_USER_AGENT
 OUTPUT_DIR = "output"
 
 # ── Meta ────────────────────────────────────────────────────────────────────
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 AUTHOR = "GhostOpcode"
 
 # ── Memory limits ─────────────────────────────────────────────────────────────

@@ -5,11 +5,16 @@ GhostOpcode directory / file enumeration — intelligent response analysis, catc
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import secrets
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable
@@ -40,7 +45,7 @@ from config import (
     WORDLIST_DIRS_SMALL,
 )
 from utils.http_client import httpx_verify, report_ssl_certificate_problem
-from utils.output import display_findings
+from utils.output import debug_log, display_findings
 from utils.target_parser import Target
 
 C_PRI = "#00FF41"
@@ -458,6 +463,10 @@ def _redirect_note(dest: str | None) -> str:
 def _interesting_status(status: int) -> bool:
     return status in {
         200,
+        201,
+        202,
+        203,
+        204,
         301,
         302,
         303,
@@ -471,17 +480,18 @@ def _interesting_status(status: int) -> bool:
     }
 
 
-def analyze_response(
+def analyze_probe(
     path: str,
     url: str,
     status: int,
-    body: str,
-    headers: dict[str, str],
+    body_len: int,
+    body_fp: str | None,
     redirect_url: str | None,
     catchall: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, bool]:
     """
-    Analyze HTTP response; return (finding or None, was_filtered_by_catchall).
+    Core dir_enum analysis from status, optional body fingerprint, and length.
+    ``body_fp`` None skips hash-based catchall matching (ffuf has no body).
     """
     filtered = False
     st = status
@@ -492,16 +502,19 @@ def analyze_response(
     if not _interesting_status(st):
         return None, False
 
-    blen = len(body)
-    bf = _body_fingerprint(body)
+    blen = body_len
 
     if st == 200 and catchall.get("detected"):
         strat = catchall.get("strategy")
         if strat == "length" and catchall.get("body_length") is not None:
             if blen == catchall["body_length"]:
                 return None, True
-        if strat == "hash" and catchall.get("body_hash"):
-            if bf == catchall["body_hash"]:
+        if (
+            strat == "hash"
+            and catchall.get("body_hash")
+            and body_fp is not None
+        ):
+            if body_fp == catchall["body_hash"]:
                 return None, True
 
     if st == 200 and blen == 0 and catchall.get("detected"):
@@ -516,7 +529,7 @@ def analyze_response(
             risk = "MEDIUM"
         elif st in (500, 503, 405):
             risk = "MEDIUM"
-        elif st == 200:
+        elif st in (200, 201, 202, 203, 204):
             risk = "LOW"
 
     note = ""
@@ -535,7 +548,7 @@ def analyze_response(
         note = "Server error — may leak stack traces"
     elif st == 503:
         note = "Service unavailable — endpoint exists"
-    elif st == 200:
+    elif st in (200, 201, 202, 203, 204):
         if ".env" in path.lower():
             note = "Environment file exposed — may contain secrets"
             cat, risk = "config_files", "CRITICAL"
@@ -560,6 +573,221 @@ def analyze_response(
         "note": note,
     }
     return finding, filtered
+
+
+def analyze_response(
+    path: str,
+    url: str,
+    status: int,
+    body: str,
+    headers: dict[str, str],
+    redirect_url: str | None,
+    catchall: dict[str, Any],
+) -> tuple[dict[str, Any] | None, bool]:
+    """
+    Analyze HTTP response; return (finding or None, was_filtered_by_catchall).
+    """
+    _ = headers
+    bf = _body_fingerprint(body)
+    return analyze_probe(
+        path, url, status, len(body), bf, redirect_url, catchall
+    )
+
+
+def _check_ffuf() -> dict[str, Any]:
+    binary = shutil.which("ffuf")
+    if not binary:
+        return {"available": False, "binary": None, "version": ""}
+
+    try:
+        result = subprocess.run(
+            [binary, "-V"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        version = (result.stdout + result.stderr).strip()
+        return {
+            "available": True,
+            "binary": binary,
+            "version": version,
+        }
+    except (OSError, subprocess.TimeoutExpired):
+        return {"available": False, "binary": None, "version": ""}
+
+
+def _run_ffuf(
+    base_url: str,
+    path_tokens: list[str],
+    threads: int,
+    timeout_per_req: int,
+    binary: str,
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Run ffuf with the same path tokens the Python engine would probe.
+    Returns (raw result rows, error_message_or_none).
+    """
+    if not path_tokens:
+        return [], None
+
+    out_path: str | None = None
+    wl_path: str | None = None
+    try:
+        fd_wl, wl_path = tempfile.mkstemp(suffix=".txt", text=True)
+        with os.fdopen(fd_wl, "w", encoding="utf-8", newline="\n") as wf:
+            for p in path_tokens:
+                tok = (p or "").lstrip("/")
+                if tok:
+                    wf.write(tok + "\n")
+
+        fd_out, out_path = tempfile.mkstemp(suffix=".json", text=True)
+        os.close(fd_out)
+
+        ff_t = max(1, min(int(threads), 100))
+        to = max(1, int(timeout_per_req))
+
+        cmd: list[str] = [
+            binary,
+            "-u",
+            f"{base_url.rstrip('/')}/FUZZ",
+            "-w",
+            wl_path,
+            "-t",
+            str(ff_t),
+            "-timeout",
+            str(to),
+            "-o",
+            out_path,
+            "-of",
+            "json",
+            "-mc",
+            "200,201,202,203,204,301,302,303,307,308,401,403,405,500,503",
+            "-fc",
+            "404",
+            "-s",
+            "-r",
+            "-H",
+            f"User-Agent: {USER_AGENT}",
+        ]
+        if not httpx_verify(config):
+            cmd.append("-k")
+
+        debug_log(
+            action="subprocess",
+            detail=(
+                f"ffuf {base_url.rstrip('/')}/FUZZ "
+                f"w={Path(wl_path).name} lines={len(path_tokens)} t={ff_t}"
+            ),
+            config=config,
+        )
+
+        wall_timeout = max(300, min(7200, len(path_tokens) // max(ff_t // 2, 1) + 400))
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=float(wall_timeout),
+        )
+
+        debug_log(
+            action="subprocess",
+            detail=f"ffuf finished — exit {result.returncode}",
+            config=config,
+        )
+
+        try:
+            with open(out_path, encoding="utf-8", errors="replace") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError, ValueError):
+            return [], "ffuf JSON output missing or invalid"
+
+        if result.returncode != 0 and not (data.get("results") or []):
+            msg = (result.stderr or result.stdout or "").strip()[:200]
+            return [], f"ffuf exited {result.returncode}" + (f": {msg}" if msg else "")
+
+        raw: list[dict[str, Any]] = []
+        for item in data.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            inp = item.get("input") or {}
+            if not isinstance(inp, dict):
+                inp = {}
+            fuzz = str(inp.get("FUZZ") or "").strip()
+            if not fuzz:
+                continue
+            rel = "/" + fuzz if not fuzz.startswith("/") else fuzz
+            st = int(item.get("status") or 0)
+            loc = str(item.get("redirectlocation") or "").strip() or None
+            raw.append(
+                {
+                    "path": rel,
+                    "url": str(item.get("url") or "").strip(),
+                    "status": st,
+                    "length": int(item.get("length") or 0),
+                    "words": int(item.get("words") or 0),
+                    "redirect": loc,
+                }
+            )
+
+        return raw, None
+
+    except subprocess.TimeoutExpired:
+        return [], "ffuf subprocess timed out"
+    except OSError as e:
+        return [], f"ffuf failed: {type(e).__name__}: {e}"
+    finally:
+        for pth in (out_path, wl_path):
+            if pth:
+                try:
+                    os.unlink(pth)
+                except OSError:
+                    pass
+
+
+def _normalize_ffuf_results(
+    raw: list[dict[str, Any]],
+    base_url: str,
+    catchall: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Map ffuf rows to the same finding dicts as the Python engine; return filtered count.
+    """
+    normalized: list[dict[str, Any]] = []
+    filtered_n = 0
+    host_base = base_url.rstrip("/")
+
+    for item in raw:
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        status = int(item.get("status") or 0)
+        url = str(item.get("url") or "").strip() or f"{host_base}{path}"
+        length = int(item.get("length") or 0)
+        redir = item.get("redirect")
+        if isinstance(redir, str) and not redir.strip():
+            redir = None
+
+        fn, was_f = analyze_probe(
+            path,
+            url,
+            status,
+            length,
+            None,
+            redir if isinstance(redir, str) else None,
+            catchall,
+        )
+        if was_f:
+            filtered_n += 1
+        elif fn:
+            fn = dict(fn)
+            fn["source"] = "ffuf"
+            normalized.append(fn)
+
+    risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    normalized.sort(key=lambda x: risk_order.get(str(x.get("risk")), 4))
+    return normalized, filtered_n
 
 
 def check_git_exposed(base_url: str, timeout: float, client: httpx.Client) -> dict[str, Any]:
@@ -732,6 +960,61 @@ def _render_header(base_url: str, n_paths: int) -> None:
     console.print(p)
 
 
+def _finding_response_length(finding: dict[str, Any]) -> int | None:
+    """Prefer ``size`` (Python engine); ffuf raw used ``length`` before normalize."""
+    for key in ("size", "length"):
+        v = finding.get(key)
+        if v is None:
+            continue
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _filter_by_dominant_response_length(
+    items: list[dict[str, Any]],
+    *,
+    threshold: int = 2000,
+    dominance_ratio: float = 0.30,
+) -> tuple[list[dict[str, Any]], int | None, int]:
+    """
+    Empirical catch-all: if one response length accounts for more than
+    ``dominance_ratio`` of all hits, treat that length as wildcard noise and
+    drop rows within ``threshold`` bytes of it. Unknown-length rows are kept.
+    Skipped when there is only one hit (cannot infer a distribution).
+    Returns (filtered, dominant_length_or_none, num_removed).
+    """
+    if len(items) < 2:
+        return items, None, 0
+
+    size_counts: Counter[int] = Counter()
+    for r in items:
+        ln = _finding_response_length(r)
+        if ln is not None:
+            size_counts[ln] += 1
+
+    if not size_counts:
+        return items, None, 0
+
+    most_common_size, count = size_counts.most_common(1)[0]
+    if count / len(items) <= dominance_ratio:
+        return items, None, 0
+
+    n_before = len(items)
+    out: list[dict[str, Any]] = []
+    for r in items:
+        ln = _finding_response_length(r)
+        if ln is None:
+            out.append(r)
+            continue
+        if abs(ln - most_common_size) > threshold:
+            out.append(r)
+
+    return out, most_common_size, n_before - len(out)
+
+
 def _print_catchall_notice(catchall: dict[str, Any]) -> None:
     if not catchall.get("detected"):
         console.print(
@@ -778,6 +1061,14 @@ def _print_git_intel(g: dict[str, Any]) -> None:
         console.print(
             Text(f"       └── Commit  : {g['last_commit'][:120]!r}", style=C_DIM)
         )
+
+
+def _engine_summary_line(base: dict[str, Any]) -> str:
+    eng = str(base.get("engine") or "python")
+    ver = (base.get("engine_ver") or "").strip().split("\n")[0][:80]
+    if eng == "ffuf" and ver:
+        return f"ffuf ({ver})"
+    return eng
 
 
 def _print_results_table(found: list[dict[str, Any]]) -> None:
@@ -865,6 +1156,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "errors": [],
         "warnings": [],
         "findings": [],
+        "engine": "python",
+        "engine_ver": "",
     }
 
     if target.is_cidr():
@@ -961,211 +1254,307 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                 f"[verbose] catchall detail: {catchall!r}"
             )
 
-        console.print()
-        console.print(
-            Text(
-                f" [ENUM] Bruteforcing {base_url} — {n_total} paths · {threads} threads",
-                style=f"bold {C_PRI}",
-            )
-        )
-        console.print()
+        mode_lbl = {1: "Fast", 2: "Normal", 3: "Full"}.get(mode, "Fast")
+        wl_short = Path(wl_path).name
+        ffuf_info = _check_ffuf()
+        use_ffuf = bool(ffuf_info.get("available"))
+        base["engine"] = "python"
+        base["engine_ver"] = ""
 
-        lock = threading.Lock()
+        if not quiet:
+            if use_ffuf:
+                ver_line = (ffuf_info.get("version") or "ffuf").split("\n")[0][:100]
+                console.print(
+                    Text(
+                        f" [✓] {ver_line} — using as dir enum engine",
+                        style=C_PRI,
+                    )
+                )
+            else:
+                console.print(
+                    Text(
+                        " [i] ffuf not found — using Python engine "
+                        "(install ffuf for faster scans: sudo apt install ffuf)",
+                        style=C_MUTED,
+                    )
+                )
+
         done_count = 0
         found_list: list[dict[str, Any]] = []
-        seen_paths: set[str] = set()
         filtered_count = 0
-        recent_hits: deque[str] = deque(maxlen=14)
-        window: deque[float] = deque()
         interrupted = False
-        probe_exc_kinds: set[str] = set()
+        ffuf_ran_ok = False
 
-        def record_done() -> None:
-            nonlocal done_count
-            with lock:
-                done_count += 1
-                now = time.perf_counter()
-                window.append(now)
-                while window and now - window[0] > 3.0:
-                    window.popleft()
+        if use_ffuf:
+            console.print()
+            console.print(
+                Text(
+                    f" [DIR ENUM] {mode_lbl} mode · {wl_short} · ffuf\n"
+                    f" [►] {base_url.rstrip('/')}/FUZZ · {n_total} paths · "
+                    f"{threads} threads",
+                    style=f"bold {C_PRI}",
+                )
+            )
+            console.print()
+            raw_ff, err_ff = _run_ffuf(
+                base_url,
+                paths,
+                threads,
+                int(max(1, timeout)),
+                str(ffuf_info["binary"]),
+                config,
+            )
+            if err_ff:
+                base["warnings"].append(f"{err_ff} — falling back to Python engine")
+                if not quiet:
+                    console.print(
+                        Text(
+                            f" [i] {err_ff} — falling back to Python engine",
+                            style=C_WARN,
+                        )
+                    )
+            else:
+                found_list, filtered_count = _normalize_ffuf_results(
+                    raw_ff, base_url, catchall
+                )
+                seen_ff: set[str] = set()
+                capped_ff: list[dict[str, Any]] = []
+                for fn in found_list:
+                    k = str(fn.get("path") or "")
+                    if k in seen_ff:
+                        continue
+                    if MAX_URLS_DIR_ENUM > 0 and len(capped_ff) >= MAX_URLS_DIR_ENUM:
+                        break
+                    seen_ff.add(k)
+                    capped_ff.append(fn)
+                found_list = capped_ff
+                base["engine"] = "ffuf"
+                base["engine_ver"] = (
+                    (ffuf_info.get("version") or "").split("\n")[0][:120]
+                )
+                done_count = n_total
+                ffuf_ran_ok = True
 
-        def probe_one(rel_path: str) -> None:
-            nonlocal filtered_count
-            url = f"{base_url.rstrip('/')}{rel_path}"
-            headers_out: dict[str, str] = {}
-            body = ""
-            status = 0
-            loc_abs: str | None = None
-            try:
-                h = client.head(url, timeout=timeout)
-                status = h.status_code
-                headers_out = {k.lower(): v for k, v in h.headers.items()}
-                cloc = h.headers.get("location")
-                if cloc:
-                    loc_abs = urljoin(url, cloc)
+        if not ffuf_ran_ok:
+            console.print()
+            console.print(
+                Text(
+                    f" [DIR ENUM] {mode_lbl} mode · {wl_short} · python\n"
+                    f" [ENUM] Bruteforcing {base_url} — {n_total} paths · "
+                    f"{threads} threads",
+                    style=f"bold {C_PRI}",
+                )
+            )
+            console.print()
 
-                if status == 429:
-                    time.sleep(2.0)
+            lock = threading.Lock()
+            done_count = 0
+            seen_paths: set[str] = set()
+            recent_hits: deque[str] = deque(maxlen=14)
+            window: deque[float] = deque()
+            probe_exc_kinds: set[str] = set()
+
+            def record_done() -> None:
+                nonlocal done_count
+                with lock:
+                    done_count += 1
+                    now = time.perf_counter()
+                    window.append(now)
+                    while window and now - window[0] > 3.0:
+                        window.popleft()
+
+            def probe_one(rel_path: str) -> None:
+                nonlocal filtered_count
+                url = f"{base_url.rstrip('/')}{rel_path}"
+                headers_out: dict[str, str] = {}
+                body = ""
+                status = 0
+                loc_abs: str | None = None
+                try:
                     h = client.head(url, timeout=timeout)
                     status = h.status_code
+                    headers_out = {k.lower(): v for k, v in h.headers.items()}
                     cloc = h.headers.get("location")
                     if cloc:
                         loc_abs = urljoin(url, cloc)
 
-                redirect = status in (301, 302, 303, 307, 308)
-                need_get = not redirect and status not in (404, 410) and (
-                    status in (200, 401, 403, 405, 500, 503)
-                )
-                if redirect:
-                    need_get = False
-
-                if need_get:
-                    with client.stream("GET", url, timeout=timeout) as g:
-                        status = g.status_code
-                        chunks: list[bytes] = []
-                        n = 0
-                        for ch in g.iter_bytes():
-                            chunks.append(ch)
-                            n += len(ch)
-                            if n >= 4096:
-                                break
-                        body = b"".join(chunks).decode("utf-8", errors="replace")
-                        cloc = g.headers.get("location")
+                    if status == 429:
+                        time.sleep(2.0)
+                        h = client.head(url, timeout=timeout)
+                        status = h.status_code
+                        cloc = h.headers.get("location")
                         if cloc:
                             loc_abs = urljoin(url, cloc)
-                        headers_out = {k.lower(): v for k, v in g.headers.items()}
 
-                if status == 429:
-                    time.sleep(2.0)
+                    redirect = status in (301, 302, 303, 307, 308)
+                    need_get = not redirect and status not in (404, 410) and (
+                        status in (200, 401, 403, 405, 500, 503)
+                    )
+                    if redirect:
+                        need_get = False
 
-                fn, was_f = analyze_response(
-                    rel_path,
-                    url,
-                    status,
-                    body,
-                    headers_out,
-                    loc_abs,
-                    catchall,
-                )
-                with lock:
-                    if was_f:
-                        filtered_count += 1
-                    elif fn:
-                        key = fn.get("path", "")
-                        if key not in seen_paths:
-                            if (
-                                MAX_URLS_DIR_ENUM > 0
-                                and len(found_list) >= MAX_URLS_DIR_ENUM
-                            ):
-                                pass
-                            else:
-                                seen_paths.add(key)
-                                found_list.append(fn)
-                                recent_hits.append(_hit_line_str(fn))
+                    if need_get:
+                        with client.stream("GET", url, timeout=timeout) as g:
+                            status = g.status_code
+                            chunks: list[bytes] = []
+                            n = 0
+                            for ch in g.iter_bytes():
+                                chunks.append(ch)
+                                n += len(ch)
+                                if n >= 4096:
+                                    break
+                            body = b"".join(chunks).decode("utf-8", errors="replace")
+                            cloc = g.headers.get("location")
+                            if cloc:
+                                loc_abs = urljoin(url, cloc)
+                            headers_out = {k.lower(): v for k, v in g.headers.items()}
 
-            except httpx.TimeoutException:
-                k = "TimeoutException"
-                with lock:
-                    if k not in probe_exc_kinds:
-                        probe_exc_kinds.add(k)
-                        base["errors"].append(
-                            "dir_enum: HTTP timeout during path probes — "
-                            "further timeouts omitted"
-                        )
-            except Exception as e:  # noqa: BLE001
-                k = type(e).__name__
-                with lock:
-                    if k not in probe_exc_kinds:
-                        probe_exc_kinds.add(k)
-                        base["errors"].append(
-                            f"dir_enum path probe ({k}): {e} — further {k} omitted"
-                        )
-            finally:
-                record_done()
+                    if status == 429:
+                        time.sleep(2.0)
 
-        progress = Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(bar_width=None, style=C_MUTED, complete_style=C_PRI),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            console=console,
-            expand=True,
-        )
-        task_id = progress.add_task("dir_enum", total=n_total)
+                    fn, was_f = analyze_response(
+                        rel_path,
+                        url,
+                        status,
+                        body,
+                        headers_out,
+                        loc_abs,
+                        catchall,
+                    )
+                    with lock:
+                        if was_f:
+                            filtered_count += 1
+                        elif fn:
+                            key = fn.get("path", "")
+                            if key not in seen_paths:
+                                if (
+                                    MAX_URLS_DIR_ENUM > 0
+                                    and len(found_list) >= MAX_URLS_DIR_ENUM
+                                ):
+                                    pass
+                                else:
+                                    seen_paths.add(key)
+                                    found_list.append(fn)
+                                    recent_hits.append(_hit_line_str(fn))
 
-        def snapshot() -> tuple[int, int, int, float, float, list[str]]:
-            with lock:
-                dc = done_count
-                nf = len(found_list)
-                ft = filtered_count
-                recent = list(recent_hits)
-            elapsed = time.perf_counter() - t_start
-            rps = len(window) / 3.0 if window else 0.0
-            return dc, nf, ft, elapsed, rps, recent
+                except httpx.TimeoutException:
+                    k = "TimeoutException"
+                    with lock:
+                        if k not in probe_exc_kinds:
+                            probe_exc_kinds.add(k)
+                            base["errors"].append(
+                                "dir_enum: HTTP timeout during path probes — "
+                                "further timeouts omitted"
+                            )
+                except Exception as e:  # noqa: BLE001
+                    k = type(e).__name__
+                    with lock:
+                        if k not in probe_exc_kinds:
+                            probe_exc_kinds.add(k)
+                            base["errors"].append(
+                                f"dir_enum path probe ({k}): {e} — further {k} omitted"
+                            )
+                finally:
+                    record_done()
 
-        display = _DirEnumLiveDisplay(
-            progress, task_id, n_total, base_url, snapshot, quiet=quiet
-        )
-        panel = Panel(
-            display,
-            border_style=C_ACCENT,
-            box=box.ROUNDED,
-            padding=(0, 1),
-        )
-
-        pit = iter(paths)
-        exhausted = False
-        pending: set[Any] = set()
-        max_inflight = min(max(threads * 4, threads), 4096)
-
-        def submit_batch(ex: ThreadPoolExecutor) -> None:
-            nonlocal exhausted
-            while len(pending) < max_inflight and not exhausted:
-                try:
-                    path = next(pit)
-                except StopIteration:
-                    exhausted = True
-                    break
-                pending.add(ex.submit(probe_one, path))
-
-        executor = ThreadPoolExecutor(max_workers=threads)
-        try:
-            with Live(panel, console=console, refresh_per_second=12, transient=False):
-                submit_batch(executor)
-                while pending or not exhausted:
-                    if pending:
-                        done_fs, _ = wait(
-                            pending,
-                            return_when=FIRST_COMPLETED,
-                            timeout=0.25,
-                        )
-                        for fut in done_fs:
-                            pending.discard(fut)
-                            try:
-                                fut.result()
-                            except Exception as e:  # noqa: BLE001
-                                k = type(e).__name__
-                                with lock:
-                                    if k not in probe_exc_kinds:
-                                        probe_exc_kinds.add(k)
-                                        base["errors"].append(
-                                            f"dir_enum worker ({k}): {e} — further {k} omitted"
-                                        )
-                            submit_batch(executor)
-                    else:
-                        submit_batch(executor)
-        except KeyboardInterrupt:
-            interrupted = True
-            with lock:
-                base["errors"].append(
-                    "[!] Interrupted by operator — partial results"
-                )
-            console.print()
-            console.print(
-                Text(" [!] Interrupted — partial results", style=f"bold {C_WARN}")
+            progress = Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(bar_width=None, style=C_MUTED, complete_style=C_PRI),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                console=console,
+                expand=True,
             )
-        finally:
-            executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+            task_id = progress.add_task("dir_enum", total=n_total)
+
+            def snapshot() -> tuple[int, int, int, float, float, list[str]]:
+                with lock:
+                    dc = done_count
+                    nf = len(found_list)
+                    ft = filtered_count
+                    recent = list(recent_hits)
+                elapsed = time.perf_counter() - t_start
+                rps = len(window) / 3.0 if window else 0.0
+                return dc, nf, ft, elapsed, rps, recent
+
+            display = _DirEnumLiveDisplay(
+                progress, task_id, n_total, base_url, snapshot, quiet=quiet
+            )
+            panel = Panel(
+                display,
+                border_style=C_ACCENT,
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+
+            pit = iter(paths)
+            exhausted = False
+            pending: set[Any] = set()
+            max_inflight = min(max(threads * 4, threads), 4096)
+
+            def submit_batch(ex: ThreadPoolExecutor) -> None:
+                nonlocal exhausted
+                while len(pending) < max_inflight and not exhausted:
+                    try:
+                        path = next(pit)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    pending.add(ex.submit(probe_one, path))
+
+            executor = ThreadPoolExecutor(max_workers=threads)
+            try:
+                with Live(panel, console=console, refresh_per_second=12, transient=False):
+                    submit_batch(executor)
+                    while pending or not exhausted:
+                        if pending:
+                            done_fs, _ = wait(
+                                pending,
+                                return_when=FIRST_COMPLETED,
+                                timeout=0.25,
+                            )
+                            for fut in done_fs:
+                                pending.discard(fut)
+                                try:
+                                    fut.result()
+                                except Exception as e:  # noqa: BLE001
+                                    k = type(e).__name__
+                                    with lock:
+                                        if k not in probe_exc_kinds:
+                                            probe_exc_kinds.add(k)
+                                            base["errors"].append(
+                                                f"dir_enum worker ({k}): {e} — further {k} omitted"
+                                            )
+                                submit_batch(executor)
+                        else:
+                            submit_batch(executor)
+            except KeyboardInterrupt:
+                interrupted = True
+                with lock:
+                    base["errors"].append(
+                        "[!] Interrupted by operator — partial results"
+                    )
+                console.print()
+                console.print(
+                    Text(" [!] Interrupted — partial results", style=f"bold {C_WARN}")
+                )
+            finally:
+                executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+
+        if found_list:
+            found_list, emp_dom, emp_removed = _filter_by_dominant_response_length(
+                found_list,
+                threshold=2000,
+                dominance_ratio=0.30,
+            )
+            if emp_dom is not None and emp_removed:
+                filtered_count += emp_removed
+                base["catchall"]["empirical_dominant_length"] = emp_dom
+                base["catchall"]["empirical_catchall_filtered"] = emp_removed
+                base["warnings"].append(
+                    f"Empirical catch-all: dominant size {emp_dom} B "
+                    f"(>30% of hits) — dropped {emp_removed} path(s) within ±2000 B"
+                )
 
         duration = time.perf_counter() - t_start
         rps = done_count / duration if duration > 0 else 0.0
@@ -1261,6 +1650,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
                     C_DIM,
                 ),
                 (f"     Catchall     : {catch_txt}\n", C_DIM),
+                (f"     Engine       : {_engine_summary_line(base)}\n", C_DIM),
                 (f"     Speed        : {base['stats']['req_per_sec']} req/s\n", C_DIM),
                 (f"     Duration     : {base['stats']['duration_s']}s", C_DIM),
             )

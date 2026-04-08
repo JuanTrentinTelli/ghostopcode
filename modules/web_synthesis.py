@@ -132,18 +132,19 @@ def extract_from_dir_enum(module_data: dict[str, Any], base_url: str) -> list[di
         except (TypeError, ValueError):
             status = None
         risk = str(row.get("risk") or "LOW").upper()
-        endpoints.append(
-            {
-                "path": _normalize_path(path or urlparse(full_url).path or "/"),
-                "full_url": full_url,
-                "params": [],
-                "sources": ["dir_enum"],
-                "status": status,
-                "risk": risk,
-                "vuln_hints": [],
-                "method": "GET",
-            }
-        )
+        ep: dict[str, Any] = {
+            "path": _normalize_path(path or urlparse(full_url).path or "/"),
+            "full_url": full_url,
+            "params": [],
+            "sources": ["dir_enum"],
+            "status": status,
+            "risk": risk,
+            "vuln_hints": [],
+            "method": "GET",
+        }
+        if row.get("source"):
+            ep["dir_enum_engine"] = row["source"]
+        endpoints.append(ep)
     return endpoints
 
 

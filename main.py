@@ -30,6 +30,7 @@ from modules.cve_lookup import _cache_clear
 from report import html_report, json_report
 from utils.asn_lookup import clear as asn_cache_clear
 from utils.dns_cache import clear as dns_cache_clear
+from utils.searchsploit import clear as sploit_cache_clear
 from utils.banner import show_banner
 from utils.base_module import (
     ModuleStatus,
@@ -120,6 +121,7 @@ _MODULE_IMPORTS: dict[str, str] = {
     "httpx": "modules.httpx_probe",
     "synth": "modules.web_synthesis",
     "nuclei": "modules.nuclei_scan",
+    "vhost": "modules.vhost_scan",
     "arp": "modules.network.arp_scan",
     "sniff": "modules.network.packet_sniffer",
 }
@@ -220,11 +222,8 @@ def run_module(name: str, target: Target, config: dict[str, Any]) -> dict[str, A
 
 
 def _clear_screen() -> None:
-    """Clear terminal using OS-appropriate command."""
-    try:
-        os.system("clear" if os.name != "nt" else "cls")
-    except OSError:
-        pass
+    """Clear terminal via ANSI (no subprocess); works on ANSI-capable TTYs."""
+    print("\033[2J\033[H", end="", flush=True)
 
 
 def _abort() -> None:
@@ -359,8 +358,9 @@ _MODULE_ROWS: list[tuple[int, str, str, str]] = [
     (14, "httpx", "httpx", "HTTP/HTTPS probe + tech fingerprint (requires httpx)"),
     (15, "synth", "Web synthesis", "correlate dir_enum + url_harvester + js_recon"),
     (16, "nuclei", "nuclei", "vulnerability templates (requires nuclei v3)"),
-    (17, "arp", "ARP scan", "CIDR only"),
-    (18, "sniff", "Packet sniffer", "CIDR / single IP"),
+    (17, "vhost", "vhost scan", "virtual host discovery via Host header"),
+    (18, "arp", "ARP scan", "CIDR only"),
+    (19, "sniff", "Packet sniffer", "CIDR / single IP"),
 ]
 
 
@@ -387,8 +387,8 @@ def _render_module_menu(target: Target) -> None:
         desc = Text(blurb, style=C_MUTED)
         console.print(Text.assemble(tag, name_part, desc))
 
-    core = _MODULE_ROWS[:16]
-    cidr_only = _MODULE_ROWS[16:]
+    core = _MODULE_ROWS[:17]
+    cidr_only = _MODULE_ROWS[17:]
 
     for mid, key, title, blurb in core:
         _line(mid, key, title, blurb)
@@ -1095,10 +1095,11 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
     if mod == "dir_enum":
         stt = res.get("stats") or {}
         n = int(stt.get("found") or 0)
-        rps = stt.get("req_per_sec", 0)
+        dur = stt.get("duration_s", 0)
+        eng = str(res.get("engine") or "python")
         rs = res.get("risk_summary") or {}
         crit = len(rs.get("CRITICAL") or [])
-        parts = [f"{n} paths", f"{rps} req/s", f"{crit} critical"]
+        parts = [f"{n} paths", eng, f"{dur}s", f"{crit} critical"]
         ne = len([x for x in (res.get("errors") or []) if x])
         nw = len([x for x in (res.get("warnings") or []) if x])
         if ne:
@@ -1283,6 +1284,30 @@ def _result_hint(res: dict[str, Any], title: str) -> str | None:
             prof,
             f"{tg} targets",
             f"{stt.get('duration_s', res.get('duration_s', 0))}s",
+        ]
+        ne = len([x for x in (res.get("errors") or []) if x])
+        nw = len([x for x in (res.get("warnings") or []) if x])
+        if ne:
+            parts.append(f"{ne} err")
+        if nw:
+            parts.append(f"{nw} warn")
+        return " · ".join(parts)
+    if mod == "vhost_scan":
+        st = res.get("status")
+        if st == "skipped":
+            return None
+        stt = res.get("stats") or {}
+        n = int(stt.get("total_found") or len(res.get("vhosts") or []))
+        ips = int(stt.get("ips_tested") or 0)
+        wl = str(res.get("wordlist") or "—")
+        crit = len(res.get("critical_findings") or [])
+        dur = stt.get("duration_s") or res.get("duration_s") or 0
+        parts = [
+            f"{n} found",
+            f"{crit} critical",
+            f"{ips} IPs",
+            wl[:40] + ("…" if len(wl) > 40 else ""),
+            f"{dur}s",
         ]
         ne = len([x for x in (res.get("errors") or []) if x])
         nw = len([x for x in (res.get("warnings") or []) if x])
@@ -1476,6 +1501,15 @@ def _run_modules_styled(
                     Text("     → nuclei binary not found (install v3)", style=C_WARN)
                 )
             # Rich output from nuclei_scan.run()
+        elif res.get("module") == "vhost_scan":
+            if status == "skipped":
+                console.print(
+                    Text(
+                        "     → skipped (domain only / CIDR, or no suitable IP)",
+                        style=C_WARN,
+                    )
+                )
+            # Rich output from vhost_scan.run()
         elif status == "pending":
             console.print(
                 Text("     → not implemented yet (stub)", style=C_DIM)
@@ -1631,6 +1665,7 @@ def main() -> None:
     _cache_clear()
     dns_cache_clear()
     asn_cache_clear()
+    sploit_cache_clear()
 
     # --- Modules ---------------------------------------------------------------
     _render_module_menu(target)
