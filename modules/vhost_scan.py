@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -358,6 +359,16 @@ def _assess_risk(hostname: str, status: int, title: str) -> str:
     return "LOW"
 
 
+_worker_session: threading.local = threading.local()
+
+
+def _get_worker_session(cfg: dict[str, Any]) -> Any:
+    """Return a per-thread requests.Session, creating it on first use per thread."""
+    if not hasattr(_worker_session, "session"):
+        _worker_session.session = make_session(cfg)
+    return _worker_session.session
+
+
 def _probe_one_vhost(
     hostname: str,
     url_base: str,
@@ -368,7 +379,7 @@ def _probe_one_vhost(
     port: int,
     scheme: str,
 ) -> dict[str, Any] | None:
-    session = make_session(cfg)
+    session = _get_worker_session(cfg)
     try:
         resp = session.get(
             url_base,
