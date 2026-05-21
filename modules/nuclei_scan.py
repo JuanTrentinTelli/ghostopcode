@@ -3,6 +3,7 @@ GhostOpcode nuclei integration — template-based web vulnerability validation (
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_PANEL, console
 
 import json
 import os
@@ -14,7 +15,6 @@ import time
 from typing import Any
 
 from rich import box
-from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
@@ -28,15 +28,6 @@ from utils.searchsploit import (
     summarize as sploit_summarize,
 )
 from utils.target_parser import Target
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_PANEL = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 NUCLEI_PROFILES: dict[int, dict[str, Any]] = {
     1: {

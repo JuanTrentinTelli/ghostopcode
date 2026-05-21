@@ -6,6 +6,7 @@ minimal fallback only when no file is available.
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_WARN, C_MUTED, C_PANEL, console
 
 import re
 import socket
@@ -16,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from rich import box
-from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
@@ -24,14 +24,6 @@ import config as app_config
 from utils.base_module import make_finding
 from utils.http_client import make_session
 from utils.target_parser import Target
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_PANEL = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 # SecLists paths — first existing file wins (no large hardcoded wordlists).
 WORDLIST_CANDIDATES: tuple[str, ...] = (

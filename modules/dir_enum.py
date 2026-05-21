@@ -3,6 +3,7 @@ GhostOpcode directory / file enumeration — intelligent response analysis, catc
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_ACCENT, console
 
 import hashlib
 import json
@@ -22,7 +23,7 @@ from urllib.parse import urljoin
 
 import httpx
 from rich import box
-from rich.console import Console, Group, RenderableType
+from rich.console import Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
@@ -47,15 +48,6 @@ from config import (
 from utils.http_client import httpx_verify, report_ssl_certificate_problem
 from utils.output import debug_log, display_findings
 from utils.target_parser import Target
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_ACCENT = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 DEFAULT_EXTENSIONS = ["php", "html", "js", "txt", "bak", "xml", "json"]
 

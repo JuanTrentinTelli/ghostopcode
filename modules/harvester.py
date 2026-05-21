@@ -3,6 +3,7 @@ GhostOpcode harvester — crawl, file hunt, email/config harvest, document metad
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_ACCENT, console
 
 import datetime as dt
 import hashlib
@@ -19,7 +20,6 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -48,15 +48,6 @@ try:
     import whois as pywhois
 except ImportError:
     pywhois = None  # type: ignore[misc, assignment]
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_ACCENT = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 MAX_CRAWL_URLS_DEFAULT = 500

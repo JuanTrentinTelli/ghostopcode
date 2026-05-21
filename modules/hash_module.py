@@ -3,6 +3,7 @@ GhostOpcode hash module — identify, local wordlist crack, optional hashcat.
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_ACCENT, console
 
 import hashlib
 import re
@@ -14,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -26,15 +26,6 @@ from rich.progress import (
 from rich.text import Text
 
 import config as app_config
-
-console = Console(highlight=False, force_terminal=True)
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_ACCENT = "#8B9CA8"
 
 # (name, meta) — order matters for tie-break; structured formats first.
 _HASH_SIGNATURES_ITEMS: list[tuple[str, dict[str, Any]]] = [

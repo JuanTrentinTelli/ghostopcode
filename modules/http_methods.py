@@ -3,6 +3,7 @@ GhostOpcode HTTP methods probe — OPTIONS, dangerous verbs, XST/WebDAV, headers
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_ACCENT, console
 
 import contextvars
 import re
@@ -13,7 +14,6 @@ from urllib.parse import urlparse, urljoin
 
 import requests
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -37,15 +37,6 @@ def _http_tls() -> tuple[requests.Session, dict[str, Any], list[str]]:
 def _hr(method: str, url: str, **kwargs: Any) -> requests.Response | None:
     session, config, ssl_w = _http_tls()
     return session_request(session, method, url, config, ssl_warnings=ssl_w, **kwargs)
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_ACCENT = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 METHODS_TO_TEST: dict[str, dict[str, Any]] = {
     "GET": {"safe": True, "risk": "INFO", "test": True},

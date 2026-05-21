@@ -3,13 +3,13 @@ Centralized terminal output for findings by severity (GhostOpcode).
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, console
 
 import re
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from rich.console import Console
 from rich.text import Text
 
 # Severity → terminal policy (verbose=True overrides MEDIUM/LOW/INFO to full detail)
@@ -21,11 +21,6 @@ TERMINAL_VERBOSITY: dict[str, str] = {
     "INFO": "summary_only",
 }
 
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_DIM = "#6F7F86"
-C_MUTED = "#4A5A62"
-C_PRI = "#00FF41"
 C_BLUE = "#6CA0DC"
 
 # Debug trace colours (terminal only; never written to reports)
@@ -34,8 +29,6 @@ DBG_HTTP = "#6CA0DC"
 DBG_DNS = "#D868C9"
 DBG_FILE = "#E8C547"
 DBG_INFO = "#6F7F86"
-
-console = Console(highlight=False, force_terminal=True)
 
 
 def debug_log(

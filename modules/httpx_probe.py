@@ -3,6 +3,7 @@ GhostOpcode httpx integration — HTTP/HTTPS probing, tech fingerprint, TLS meta
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_PANEL, console
 
 import json
 import os
@@ -15,7 +16,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -23,15 +23,6 @@ from rich.text import Text
 from utils.base_module import make_finding
 from utils.output import debug_log
 from utils.target_parser import Target
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_PANEL = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 _DEFAULT_PORTS = "80,443,8080,8443,8000,8888,3000,5000,9090,9443"
 

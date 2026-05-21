@@ -3,6 +3,7 @@ GhostOpcode Subfinder integration — passive OSINT subdomains, merge with wordl
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_PANEL, console
 
 import os
 import re
@@ -18,7 +19,6 @@ import dns.resolver
 
 from utils.dns_cache import cache_stats, resolve as dns_resolve, resolve_many
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -27,15 +27,6 @@ import config as app_config
 from utils.output import debug_log, display_findings
 from utils.subdomain_intel import apply_subdomain_ip_intel
 from utils.target_parser import Target
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_PANEL = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 MAX_RESOLVE = 800
 RESOLVE_THREADS = 48

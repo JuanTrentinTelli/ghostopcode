@@ -3,6 +3,7 @@ GhostOpcode DNS recon module — passive queries, AXFR probe, technology inferen
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_ACCENT, console
 
 import re
 import time
@@ -15,7 +16,6 @@ import dns.resolver
 import dns.reversename
 import dns.zone
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -25,15 +25,6 @@ from utils.output import debug_log
 from utils.target_parser import Target
 
 # Terminal palette (aligned with framework identity)
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_ACCENT = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
-
 # Common SRV prefixes worth probing at zone apex (non-destructive lookups)
 _SRV_PROBES = (
     "_sip._tcp",

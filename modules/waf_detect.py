@@ -3,6 +3,7 @@ GhostOpcode WAF / CDN / edge protection detection — passive headers, active pr
 """
 
 from __future__ import annotations
+from utils.theme import C_PRI, C_DIM, C_ERR, C_WARN, C_MUTED, C_PANEL, console
 
 import time
 from typing import Any, Mapping
@@ -10,7 +11,6 @@ from urllib.parse import urlparse
 
 import requests
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
@@ -18,15 +18,6 @@ from config import DEFAULT_TIMEOUT, USER_AGENT
 from utils.http_client import make_session, resolve_base_url, session_get
 from utils.output import debug_log
 from utils.target_parser import Target
-
-C_PRI = "#00FF41"
-C_DIM = "#6F7F86"
-C_ERR = "#FF3B3B"
-C_WARN = "#E8C547"
-C_MUTED = "#4A5A62"
-C_PANEL = "#8B9CA8"
-
-console = Console(highlight=False, force_terminal=True)
 
 # Sentinel: header must be present with any non-empty value
 _ANY: Any = object()
