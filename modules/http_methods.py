@@ -5,10 +5,8 @@ GhostOpcode HTTP methods probe — OPTIONS, dangerous verbs, XST/WebDAV, headers
 from __future__ import annotations
 
 import contextvars
-import random
 import re
 import secrets
-import string
 import time
 from typing import Any
 from urllib.parse import urlparse, urljoin
@@ -159,9 +157,9 @@ def detect_endpoint_catchall(
     Fully dynamic — no framework-specific strings.
     """
     fake_methods = [
-        "GHOSTTEST" + "".join(random.choices(string.ascii_uppercase, k=4)),
-        "XPROBE" + "".join(random.choices(string.digits, k=4)),
-        "NULLMETHOD" + "".join(random.choices(string.ascii_uppercase, k=3)),
+        "GHOSTTEST" + secrets.token_hex(2).upper(),
+        "XPROBE" + secrets.token_hex(2).upper(),
+        "NULLMETHOD" + secrets.token_hex(1).upper(),
     ]
     responses: list[dict[str, Any]] = []
     for method in fake_methods:
