@@ -416,6 +416,67 @@
     {% for t in tech %}<span class="badge info">{{ t | string | e }}</span>{% endfor %}
   </div>
   {% endif %}
+
+  {# ── Email security (SPF / DMARC / DKIM) ────────────────────────────────── #}
+  {% set esec = results.dns_recon.email_security | default({}) %}
+  {% if esec %}
+  <h3>Segurança de E-mail</h3>
+  {% set rs = esec.risk_summary | default({}) %}
+  {% if rs.overall_risk %}
+  <div class="alert {{ rs.overall_risk | lower }}">
+    <strong>Avaliação geral: {{ rs.overall_risk | e }}</strong>
+    {% if rs.spoofing_potential %} — {{ rs.spoofing_potential | e }}{% endif %}
+  </div>
+  {% endif %}
+  <table class="data">
+    <thead><tr><th>Controlo</th><th>Status</th><th>Risco</th><th>Detalhe</th></tr></thead>
+    <tbody>
+    {% for ctrl_key, ctrl_label in [('spf','SPF'), ('dmarc','DMARC'), ('dkim','DKIM')] %}
+      {% set ctrl = esec.get(ctrl_key, {}) %}
+      {% if ctrl %}
+      <tr>
+        <td><strong>{{ ctrl_label }}</strong></td>
+        <td>{% if ctrl.found %}✓ Encontrado{% else %}<span style="color:#ff4444">✗ Não encontrado</span>{% endif %}</td>
+        <td><span class="badge {{ (ctrl.risk | default('LOW')) | lower }}">{{ ctrl.risk | default('—') | e }}</span></td>
+        <td class="cell-long">{{ ctrl.risk_reason | default('') | e }}</td>
+      </tr>
+      {% if ctrl.record %}
+      <tr><td colspan="4" class="muted mono" style="padding-left:2em">{{ ctrl.record | e }}</td></tr>
+      {% endif %}
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {# ── Critical / High findings from dns_recon ────────────────────────────── #}
+  {% set dns_crit = results.dns_recon.critical_findings | default([]) %}
+  {% set dns_high = results.dns_recon.high_findings | default([]) %}
+  {% if dns_crit or dns_high %}
+  <h3>Findings ({{ (dns_crit | length) + (dns_high | length) }})</h3>
+  <table class="data">
+    <thead><tr><th>Risco</th><th>Categoria</th><th>Valor</th><th>Nota</th></tr></thead>
+    <tbody>
+    {% for f in dns_crit %}
+    <tr>
+      <td><span class="badge critical">CRITICAL</span></td>
+      <td>{{ f.category | default('—') | e }}</td>
+      <td class="mono">{{ f.value | default('—') | e }}</td>
+      <td class="cell-long">{{ f.note | default('') | e }}</td>
+    </tr>
+    {% endfor %}
+    {% for f in dns_high %}
+    <tr>
+      <td><span class="badge high">HIGH</span></td>
+      <td>{{ f.category | default('—') | e }}</td>
+      <td class="mono">{{ f.value | default('—') | e }}</td>
+      <td class="cell-long">{{ f.note | default('') | e }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
   <details class="json-raw"><summary>JSON completo — DNS Recon</summary>{{ results.dns_recon | json_pretty }}</details>
 </section>
 {% endif %}
