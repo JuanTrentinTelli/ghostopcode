@@ -45,7 +45,11 @@ from config import (
     WORDLIST_DIRS_FAST,
     WORDLIST_DIRS_SMALL,
 )
-from utils.http_client import httpx_verify, report_ssl_certificate_problem
+from utils.http_client import (
+    httpx_verify,
+    report_ssl_certificate_problem,
+    resolve_base_url as _http_resolve_base_url,
+)
 from utils.output import debug_log, display_findings
 from utils.target_parser import Target
 
@@ -257,62 +261,9 @@ def resolve_base_url(
     ssl_notes: list[str] | None = None,
     diagnostics: list[str] | None = None,
 ) -> str | None:
-    """
-    Determine the base URL to enumerate.
-    Try HTTPS first, fallback to HTTP.
-    """
-    host = target.value
-    schemes = ("https", "http")
-    verify_tls = httpx_verify(config)
-    for scheme in schemes:
-        base = f"{scheme}://{host}"
-        root = base.rstrip("/") + "/"
-        try:
-            with httpx.Client(
-                verify=verify_tls,
-                follow_redirects=False,
-                timeout=timeout,
-                headers={"User-Agent": USER_AGENT},
-            ) as c:
-                try:
-                    r = c.head(root, timeout=timeout)
-                except httpx.HTTPError as e:
-                    if verify_tls and _httpx_err_looks_like_tls(e):
-                        report_ssl_certificate_problem(
-                            root.rstrip("/"),
-                            config,
-                            ssl_warnings=ssl_notes,
-                        )
-                    r = None
-                if r is not None and r.status_code > 0 and r.status_code < 600:
-                    return base.rstrip("/")
-                try:
-                    r2 = c.get(root, timeout=timeout)
-                except httpx.HTTPError as e:
-                    if verify_tls and _httpx_err_looks_like_tls(e):
-                        report_ssl_certificate_problem(
-                            root.rstrip("/"),
-                            config,
-                            ssl_warnings=ssl_notes,
-                        )
-                    continue
-                if r2.status_code > 0 and r2.status_code < 600:
-                    return base.rstrip("/")
-        except Exception as e:  # noqa: BLE001
-            if diagnostics is not None:
-                diagnostics.append(
-                    f"dir_enum base URL ({scheme}): {type(e).__name__}: {e}"
-                )
-            continue
-    return None
-
-
-def _httpx_err_looks_like_tls(exc: BaseException) -> bool:
-    s = str(exc).lower()
-    return any(
-        k in s
-        for k in ("certificate", "cert verify", "ssl", "tls", "handshake")
-    )
+    """Try HTTPS then HTTP; follow redirects to reach the canonical origin."""
+    _ = diagnostics  # preserved for call-site compat; errors surface via ssl_notes
+    return _http_resolve_base_url(target, timeout, config, ssl_warnings=ssl_notes)
 
 
 def _body_fingerprint(body: str) -> str:
