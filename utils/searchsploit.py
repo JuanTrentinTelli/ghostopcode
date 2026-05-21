@@ -39,6 +39,9 @@ def search_cve(cve_id: str, timeout: int = 10) -> list[dict[str, Any]]:
     with _SPLOIT_LOCK:
         if cve_normalized in _SPLOIT_CACHE:
             return list(_SPLOIT_CACHE[cve_normalized])
+        # Sentinel while querying: prevents concurrent threads from issuing
+        # duplicate subprocesses for the same CVE before the result is cached.
+        _SPLOIT_CACHE[cve_normalized] = []
 
     exploits = _query_searchsploit(cve_normalized, timeout)
 
