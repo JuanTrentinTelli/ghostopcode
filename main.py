@@ -302,7 +302,7 @@ def _slug_output_name(target_value: str) -> str:
     output_base = Path(app_config.OUTPUT_DIR).resolve()
     candidate = (output_base / slug).resolve()
     if not _path_is_under_output_base(output_base, candidate):
-        digest = hashlib.md5(
+        digest = hashlib.sha256(
             str(target_value).encode("utf-8", errors="replace")
         ).hexdigest()[:8]
         slug = f"target_{digest}"
@@ -318,7 +318,7 @@ def _make_session_output_dir(target: Target) -> str:
     output_dir = output_base / f"{slug}_{stamp}"
     resolved = output_dir.resolve()
     if not _path_is_under_output_base(output_base, resolved):
-        digest = hashlib.md5(
+        digest = hashlib.sha256(
             target.value.encode("utf-8", errors="replace")
         ).hexdigest()[:8]
         output_dir = output_base / f"target_{digest}_{stamp}"
