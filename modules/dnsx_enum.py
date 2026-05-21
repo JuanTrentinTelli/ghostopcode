@@ -5,10 +5,9 @@ GhostOpcode dnsx integration — bulk DNS resolution, record enrichment, wildcar
 from __future__ import annotations
 
 import json
-import random
 import re
+import secrets
 import shutil
-import string
 import subprocess
 import time
 from typing import Any
@@ -224,9 +223,7 @@ def detect_wildcard(
     """
     Probe a random label under ``domain``. If it resolves to A, wildcard is likely.
     """
-    random_sub = "".join(
-        random.choices(string.ascii_lowercase + string.digits, k=16)
-    )
+    random_sub = secrets.token_hex(8)
     test_fqdn = f"{random_sub}.{domain.lower().strip()}"
 
     try:
