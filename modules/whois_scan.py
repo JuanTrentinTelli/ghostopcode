@@ -1451,6 +1451,8 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
     flags = compute_security_flags(tech, http_data)
     base["security_flags"] = flags
     base["technologies"] = _technologies_flat(tech)
+    for sev, key in (("CRITICAL", "critical_findings"), ("HIGH", "high_findings"), ("MEDIUM", "medium_findings"), ("LOW", "low_findings")):
+        base[key] = [f for f in flags if f.get("severity", "LOW") == sev]
 
     if not quiet:
         _print_http(http_data)
