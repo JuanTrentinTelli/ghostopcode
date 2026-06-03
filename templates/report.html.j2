@@ -1369,6 +1369,63 @@
 </section>
 {% endif %}
 
+{# --- httpx probe --- #}
+{% if results.get('httpx_probe') and results.httpx_probe.status not in ['skipped'] %}
+<section class="module" id="httpx">
+  <h2>httpx Probe</h2>
+  <span class="status-pill">Status: {{ results.httpx_probe.status | e }}</span>
+  {% if results.httpx_probe.get('error') %}<p class="muted">{{ results.httpx_probe.error | e }}</p>{% endif %}
+  <p class="muted">Alvo: <span class="mono">{{ results.httpx_probe.target | e }}</span> · httpx {{ results.httpx_probe.httpx_version | default('—') | e }}</p>
+  {% set hst = results.httpx_probe.stats | default({}) %}
+  <dl class="kv">
+    <dt>Hosts vivos</dt><dd>{{ hst.unique_hosts_live | default('—') }}</dd>
+    <dt>URLs (HTTP/HTTPS)</dt><dd>{{ hst.total_urls_live | default(results.httpx_probe.live_count | default('—')) }}</dd>
+    <dt>FQDNs de entrada</dt><dd>{{ hst.total_fqdns | default('—') }}</dd>
+    <dt>Duração</dt><dd>{{ hst.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set hrs = results.httpx_probe.risk_summary | default({}) %}
+  {% if hrs %}
+  <h3>risk_summary</h3>
+  {% for rk, items in hrs | dictsort %}
+    {% if items %}
+    <h4>{{ rk }}</h4>
+    <p class="mono muted cell-long">{{ items | join(', ') | e }}</p>
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+  {% set pb = results.httpx_probe.probed | default([]) %}
+  {% if pb %}
+  <h3>Serviços HTTP/HTTPS</h3>
+  <table class="data">
+    <thead><tr><th>URL</th><th>HTTP</th><th>Título</th><th>Tech</th><th>Server</th><th>CDN</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for s in pb[:300] %}
+      <tr>
+        <td class="mono cell-long">{{ s.url | default(s.host) | default('—') | e }}{% if s.redirected %} →{% endif %}</td>
+        <td class="mono">{{ s.status_code | default('—') }}</td>
+        <td class="cell-long">{{ s.title | default('—') | string | e }}</td>
+        <td class="cell-long">{{ (s.tech | default([])) | join(', ') | e }}</td>
+        <td>{{ s.webserver | default('—') | string | e }}</td>
+        <td>{{ s.cdn | default('—') | string | e }}</td>
+        <td>{% set rk = s.risk | default('LOW') %}<span class="badge {{ rk | string | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if pb | length > 300 %}<p class="muted">Mostrando 300 de {{ pb | length }}.</p>{% endif %}
+  {% endif %}
+  {% if results.httpx_probe.warnings | default([]) %}
+  <h3>Avisos</h3>
+  <ul class="compact">{% for w in results.httpx_probe.warnings %}<li>{{ w | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if results.httpx_probe.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.httpx_probe.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — httpx</summary>{{ results.httpx_probe | json_pretty }}</details>
+</section>
+{% endif %}
+
 {# --- CVE lookup --- #}
 {% if results.get('cve_lookup') %}
 <section class="module" id="cve">
