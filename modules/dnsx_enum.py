@@ -10,6 +10,8 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from typing import Any
 
@@ -132,8 +134,14 @@ def run_dnsx(
     timeout: int,
     dnsx_binary: str,
     config: dict[str, Any],
+    quiet: bool = False,
 ) -> list[dict[str, Any]]:
-    """Run dnsx with JSONL output. Returns parsed objects. Never raises."""
+    """Run dnsx with JSONL output. Returns parsed objects. Never raises.
+
+    Streams stdout line-by-line so the operator sees a live resolved-host
+    counter instead of a seemingly frozen terminal during bulk resolution.
+    A watchdog enforces the wall-clock budget and keeps partial results.
+    """
     if not fqdns:
         return []
 
@@ -174,35 +182,88 @@ def run_dnsx(
         stdin_payload += "\n"
 
     wall_timeout = max(90.0, min(3600.0, len(fqdns) * 2.0 + 45.0))
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=stdin_payload,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=wall_timeout,
         )
-    except subprocess.TimeoutExpired:
-        return []
     except Exception:  # noqa: BLE001
         return []
 
+    # Feed hostnames from a daemon thread so a full stdout pipe can never
+    # deadlock the writer (classic large-input + large-output Popen deadlock).
+    def _feed() -> None:
+        try:
+            if proc.stdin:
+                proc.stdin.write(stdin_payload)
+                proc.stdin.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+
+    # Watchdog enforces the wall-clock budget; whatever resolved so far is kept.
+    done = threading.Event()
+    timed_out = threading.Event()
+
+    def _watchdog() -> None:
+        if not done.wait(wall_timeout):
+            timed_out.set()
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    total = len(fqdns)
+    resolved: list[dict[str, Any]] = []
+    last_tick = 0.0
+    try:
+        for line in proc.stdout or ():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                resolved.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            if not quiet:
+                now = time.perf_counter()
+                if now - last_tick >= 0.2:
+                    last_tick = now
+                    sys.stdout.write(
+                        f"\r     ↳ resolved {len(resolved):,} "
+                        f"(scanning {total:,} FQDNs)…"
+                    )
+                    sys.stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        done.set()
+        try:
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        if not quiet:
+            sys.stdout.write("\r" + " " * 64 + "\r")  # clear progress line
+            sys.stdout.flush()
+
     debug_log(
         action="subprocess",
-        detail=f"dnsx finished — exit {result.returncode}",
+        detail=(
+            f"dnsx finished — {len(resolved)} resolved"
+            + (" (wall-timeout, partial)" if timed_out.is_set() else "")
+        ),
         config=config,
     )
-
-    resolved: list[dict[str, Any]] = []
-    for line in (result.stdout or "").strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            resolved.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
     return resolved
 
 
@@ -590,6 +651,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         timeout=timeout,
         dnsx_binary=binary,
         config=config,
+        quiet=quiet,
     )
 
     w_ip = wildcard.get("wildcard_ip")
