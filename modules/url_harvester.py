@@ -238,15 +238,20 @@ def fetch_wayback(
     errors: list[str],
     warnings: list[str],
     config: dict[str, Any] | None = None,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """
     Fetch historical URLs from Wayback Machine CDX API (no external tools).
 
     Queries both the exact host and wildcard subdomains when the name looks
     like an apex domain (single dot in the hostname part).
+
+    Returns ``(urls, reachable)`` where ``reachable`` is True only if at least
+    one query got a usable HTTP response (so callers can report real source
+    availability instead of assuming it).
     """
     base = "http://web.archive.org/cdx/search/cdx"
     urls: set[str] = set()
+    reachable = False
     # Primary: the FQDN the operator entered
     url_specs = [f"{domain}/*"]
     labels = domain.count(".")
@@ -286,6 +291,7 @@ def fetch_wayback(
                 continue
             resp.raise_for_status()
             data = resp.json()
+            reachable = True
             n_before = len(urls)
             if isinstance(data, list) and len(data) > 1:
                 for row in data[1:]:
@@ -319,7 +325,7 @@ def fetch_wayback(
                 f"Wayback fetch failed ({url_spec}): {type(e).__name__}: {e}"
             )
 
-    return list(urls)
+    return list(urls), reachable
 
 
 def fetch_commoncrawl(
@@ -328,9 +334,13 @@ def fetch_commoncrawl(
     errors: list[str],
     warnings: list[str],
     config: dict[str, Any],
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """
     Fetch URLs from the latest Common Crawl CDX index (HTTP JSON lines).
+
+    Returns ``(urls, reachable)`` — ``reachable`` is True only if a data query
+    got a definitive response (200 with rows, or 404 = no captures). All-timeout
+    / all-error runs report False so the source is not shown as available.
     """
     index_url = "https://index.commoncrawl.org/collinfo.json"
     latest: str | None = None
@@ -363,8 +373,9 @@ def fetch_commoncrawl(
 
     if not latest:
         errors.append("Common Crawl: no index endpoint resolved")
-        return []
+        return [], False
 
+    reachable = False
     params = {
         "url": f"*.{domain}",
         "output": "json",
@@ -387,8 +398,10 @@ def fetch_commoncrawl(
                 errors.append(f"Common Crawl query ({url_pat}): SSL/connection failed")
                 continue
             if resp.status_code == 404:
+                reachable = True  # endpoint answered: no captures for this pattern
                 continue
             resp.raise_for_status()
+            reachable = True
             for line in resp.text.splitlines():
                 line = line.strip()
                 if not line:
@@ -418,7 +431,7 @@ def fetch_commoncrawl(
                 f"Common Crawl query ({url_pat}): {type(e).__name__}: {e}"
             )
 
-    return list(urls)
+    return list(urls), reachable
 
 
 def fetch_alienvault(
@@ -427,13 +440,18 @@ def fetch_alienvault(
     errors: list[str],
     warnings: list[str],
     config: dict[str, Any],
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """
     Fetch URLs from AlienVault OTX URL list for the indicator (domain).
+
+    Returns ``(urls, reachable)`` — ``reachable`` is False when the source could
+    not be queried for usable data (timeout, connection error, 403/429), so the
+    report does not claim availability we never confirmed.
     """
     url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list"
     params = {"limit": 500, "page": 1}
     urls: list[str] = []
+    reachable = False
     try:
         resp = http_get(
             url,
@@ -444,14 +462,15 @@ def fetch_alienvault(
         )
         if resp is None:
             errors.append("AlienVault OTX: SSL/connection failed")
-            return []
+            return [], False
         if resp.status_code == 429:
             warnings.append("AlienVault OTX: rate limited (429) — skipped")
-            return []
+            return [], False
         if resp.status_code == 403:
             warnings.append("AlienVault OTX: forbidden (403) — may require API key")
-            return []
+            return [], False
         resp.raise_for_status()
+        reachable = True
         data = resp.json()
         for entry in data.get("url_list") or []:
             if isinstance(entry, dict) and entry.get("url"):
@@ -473,7 +492,7 @@ def fetch_alienvault(
         errors.append(
             f"AlienVault OTX fetch failed: {type(e).__name__}: {e}"
         )
-    return list(dict.fromkeys(urls))
+    return list(dict.fromkeys(urls)), reachable
 
 
 def fetch_gau(domain: str, timeout: int, errors: list[str]) -> list[str]:
@@ -611,9 +630,13 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         "target": target.value,
         "status": "success",
         "sources": {
-            "wayback": {"count": 0, "available": True},
-            "commoncrawl": {"count": 0, "available": True},
-            "alienvault": {"count": 0, "available": True},
+            # ``available`` starts False (pessimistic) and is set True per source
+            # only when its fetch confirms a usable HTTP response. gau is static
+            # (presence on PATH). This avoids reporting availability we never
+            # confirmed when a source times out or is blocked.
+            "wayback": {"count": 0, "available": False},
+            "commoncrawl": {"count": 0, "available": False},
+            "alienvault": {"count": 0, "available": False},
             "gau": {"count": 0, "available": bool(shutil.which("gau"))},
         },
         "total_urls": 0,
@@ -651,8 +674,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
 
     # --- Collect ----------------------------------------------------------------
     console.print()
-    wb = fetch_wayback(domain, timeout, errors, warnings, config)
+    wb, wb_ok = fetch_wayback(domain, timeout, errors, warnings, config)
     base["sources"]["wayback"]["count"] = len(wb)
+    base["sources"]["wayback"]["available"] = wb_ok
     console.print(
         Text.assemble(
             (" [1/4] Wayback Machine...     ", C_DIM),
@@ -660,8 +684,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    cc = fetch_commoncrawl(domain, timeout, errors, warnings, config)
+    cc, cc_ok = fetch_commoncrawl(domain, timeout, errors, warnings, config)
     base["sources"]["commoncrawl"]["count"] = len(cc)
+    base["sources"]["commoncrawl"]["available"] = cc_ok
     console.print(
         Text.assemble(
             (" [2/4] Common Crawl...        ", C_DIM),
@@ -669,8 +694,9 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    otx = fetch_alienvault(domain, timeout, errors, warnings, config)
+    otx, otx_ok = fetch_alienvault(domain, timeout, errors, warnings, config)
     base["sources"]["alienvault"]["count"] = len(otx)
+    base["sources"]["alienvault"]["available"] = otx_ok
     console.print(
         Text.assemble(
             (" [3/4] AlienVault OTX...       ", C_DIM),

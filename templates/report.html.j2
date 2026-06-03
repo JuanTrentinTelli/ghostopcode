@@ -1156,6 +1156,10 @@
   <ul class="compact mono">{% for u in lst[:25] %}<li>{{ u | e }}</li>{% endfor %}{% if lst | length > 25 %}<li>…</li>{% endif %}</ul>
   {% endfor %}
   {% endif %}
+  {% if results.url_harvester.warnings | default([]) %}
+  <h3>Avisos</h3>
+  <ul class="compact">{% for w in results.url_harvester.warnings %}<li>{{ w | e }}</li>{% endfor %}</ul>
+  {% endif %}
   {% if results.url_harvester.errors | default([]) %}
   <h3>Erros</h3>
   <ul class="compact">{% for e in results.url_harvester.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
