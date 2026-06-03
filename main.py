@@ -462,12 +462,21 @@ def _module_tier_counts(result: dict[str, Any]) -> tuple[int, int, int, int]:
     Uses standard ``*_findings`` lists, but takes the per-tier maximum versus
     ``findings_flat`` so dedup inside ``derive_finding_tiers`` cannot undercount
     versus what modules already reported (e.g. URL harvester).
+
+    The ``findings_flat`` counts are clamped to ``MAX_FINDINGS_MODULE`` first, so
+    the SESSION COMPLETE footer respects the same per-tier cap that trims the
+    ``*_findings`` lists and the HTML report — otherwise an uncapped flat roll-up
+    (e.g. dnsx with thousands of LOW rows) would show a higher LOW count in the
+    footer than the report's capped distribution.
     """
     ct = _safe_list_len(result.get("critical_findings"))
     ht = _safe_list_len(result.get("high_findings"))
     mt = _safe_list_len(result.get("medium_findings"))
     lt = _safe_list_len(result.get("low_findings"))
     fc, fh, fm, fl = _count_findings_flat_by_risk(result.get("findings_flat"))
+    cap = int(getattr(app_config, "MAX_FINDINGS_MODULE", 0) or 0)
+    if cap > 0:
+        fc, fh, fm, fl = min(fc, cap), min(fh, cap), min(fm, cap), min(fl, cap)
     return (max(ct, fc), max(ht, fh), max(mt, fm), max(lt, fl))
 
 
