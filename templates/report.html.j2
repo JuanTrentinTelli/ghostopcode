@@ -1369,6 +1369,56 @@
 </section>
 {% endif %}
 
+{# --- dnsx enum --- #}
+{% if results.get('dnsx_enum') and results.dnsx_enum.status not in ['skipped'] %}
+<section class="module" id="dnsx">
+  <h2>dnsx Enum</h2>
+  <span class="status-pill">Status: {{ results.dnsx_enum.status | e }}</span>
+  {% if results.dnsx_enum.get('error') %}<p class="muted">{{ results.dnsx_enum.error | e }}</p>{% endif %}
+  <p class="muted">Alvo: <span class="mono">{{ results.dnsx_enum.target | e }}</span> · dnsx {{ results.dnsx_enum.dnsx_version | default('—') | e }}</p>
+  {% set dst = results.dnsx_enum.stats | default({}) %}
+  <dl class="kv">
+    <dt>FQDNs de entrada</dt><dd>{{ dst.total_fqdns | default(results.dnsx_enum.total_fqdns | default('—')) }}</dd>
+    <dt>Resolvidos</dt><dd>{{ dst.total_resolved | default(results.dnsx_enum.total_resolved | default('—')) }}</dd>
+    <dt>Duração</dt><dd>{{ dst.duration_s | default('—') }}s</dd>
+  </dl>
+  {% set wc = results.dnsx_enum.wildcard | default({}) %}
+  <h3>Wildcard DNS</h3>
+  <dl class="kv">
+    <dt>Detectado</dt><dd>{{ wc.detected | default(false) }}</dd>
+    <dt>IP wildcard</dt><dd class="mono">{{ wc.wildcard_ip | default('—') | e }}</dd>
+  </dl>
+  {% set rv = results.dnsx_enum.resolved | default([]) %}
+  {% if rv %}
+  <h3>Resolução DNS (dnsx)</h3>
+  <table class="data">
+    <thead><tr><th>FQDN</th><th>IP / target</th><th>Records</th><th>CDN</th><th>Risco</th></tr></thead>
+    <tbody>
+    {% for r in rv[:300] %}
+      <tr>
+        <td class="mono cell-long">{{ r.fqdn | default('—') | e }}</td>
+        <td class="mono">{{ r.ip | default('—') | e }}</td>
+        <td>{{ [('A' if r.a else ''), ('AAAA' if r.aaaa else ''), ('CNAME' if r.cname else ''), ('MX' if r.mx else ''), ('TXT' if r.txt else ''), ('NS' if r.ns else '')] | select | join(' · ') | e }}</td>
+        <td>{{ r.cdn | default('—') | string | e }}</td>
+        <td>{% set rk = r.risk | default('LOW') %}<span class="badge {{ rk | string | lower | e }}">{{ rk | e }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if rv | length > 300 %}<p class="muted">Mostrando 300 de {{ rv | length }}.</p>{% endif %}
+  {% endif %}
+  {% if results.dnsx_enum.warnings | default([]) %}
+  <h3>Avisos</h3>
+  <ul class="compact">{% for w in results.dnsx_enum.warnings %}<li>{{ w | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if results.dnsx_enum.errors | default([]) %}
+  <h3>Erros</h3>
+  <ul class="compact">{% for e in results.dnsx_enum.errors %}<li>{{ e | e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="json-raw"><summary>JSON completo — dnsx</summary>{{ results.dnsx_enum | json_pretty }}</details>
+</section>
+{% endif %}
+
 {# --- httpx probe --- #}
 {% if results.get('httpx_probe') and results.httpx_probe.status not in ['skipped'] %}
 <section class="module" id="httpx">
