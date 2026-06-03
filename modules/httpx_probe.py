@@ -51,6 +51,11 @@ def _httpx_candidate_paths() -> list[str]:
         "/usr/local/bin/httpx",
         str(home / "go" / "bin" / "httpx"),
         "/root/go/bin/httpx",
+        # Kali/Debian package the ProjectDiscovery tool as ``httpx-toolkit`` to
+        # avoid colliding with the Python ``httpx`` CLI (also at /usr/bin/httpx).
+        # Try it before the bare ``httpx`` so we don't pick the Python library.
+        str(shutil.which("httpx-toolkit") or ""),
+        "/usr/bin/httpx-toolkit",
         str(shutil.which("httpx") or ""),
     ]
 
