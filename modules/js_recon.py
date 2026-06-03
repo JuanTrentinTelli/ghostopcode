@@ -790,6 +790,7 @@ def fetch_js(
     url: str,
     timeout: float,
     errors: list[str],
+    config: dict[str, Any],
 ) -> tuple[str | None, int]:
     """Download JS body up to size cap. Returns (text, size) or (None, 0)."""
     try:
