@@ -446,6 +446,15 @@ def parse_dnsx_output(
             asn = str(asn_raw or "").strip()
         status_code = str(item.get("status_code") or item.get("rcode") or "")
 
+        # dnsx emits a JSON line for every queried host, including negative
+        # answers (NXDOMAIN/SERVFAIL/REFUSED) which carry only the parent SOA and
+        # no address records. Counting those as "resolved" turned ~all wordlist
+        # names into findings (hostname-keyword risk → false CRITICAL/HIGH). Keep
+        # only rows that actually carry a usable record.
+        has_record = bool(a_records or aaaa_records or cname or mx or ns or txt)
+        if status_code.upper() in ("NXDOMAIN", "SERVFAIL", "REFUSED") or not has_record:
+            continue
+
         if wildcard_ip and len(a_records) == 1 and a_records[0] == wildcard_ip:
             continue
 
