@@ -10,6 +10,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -245,12 +247,17 @@ def run_httpx(
     timeout: int,
     ports: str,
     config: dict[str, Any],
+    quiet: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Run httpx; read JSONL from stdout. Never raises.
 
     Hosts are passed via **stdin** without ``-l -`` — em v1.6.10 ``-l -`` pode
     falhar com "No input provided". ``-nf`` força resultado explícito para HTTP e HTTPS.
+
+    Streams stdout line-by-line so the operator sees a live probed-URL counter
+    instead of a frozen terminal; a watchdog enforces the wall-clock budget and
+    keeps partial results.
     """
     if not fqdns:
         return []
@@ -315,35 +322,86 @@ def run_httpx(
     )
 
     wall_timeout = max(120.0, min(7200.0, len(fqdns) * 3.0 + 90.0))
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=stdin_payload,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=wall_timeout,
         )
-    except subprocess.TimeoutExpired:
-        return []
     except Exception:  # noqa: BLE001
         return []
 
-    debug_log(
-        action="subprocess",
-        detail=f"httpx finished — exit {result.returncode}",
-        config=config,
-    )
+    # Feed hostnames from a daemon thread so a full stdout pipe can never
+    # deadlock the writer (classic large-input + large-output Popen deadlock).
+    def _feed() -> None:
+        try:
+            if proc.stdin:
+                proc.stdin.write(stdin_payload)
+                proc.stdin.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+
+    # Watchdog enforces the wall-clock budget; whatever probed so far is kept.
+    done = threading.Event()
+    timed_out = threading.Event()
+
+    def _watchdog() -> None:
+        if not done.wait(wall_timeout):
+            timed_out.set()
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+    threading.Thread(target=_watchdog, daemon=True).start()
 
     probed: list[dict[str, Any]] = []
-    for line in (result.stdout or "").strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    last_tick = 0.0
+    try:
+        for line in proc.stdout or ():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                probed.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            if not quiet:
+                now = time.perf_counter()
+                if now - last_tick >= 0.2:
+                    last_tick = now
+                    sys.stdout.write(
+                        f"\r     ↳ probed {len(probed):,} live URL(s)…"
+                    )
+                    sys.stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        done.set()
         try:
-            probed.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        if not quiet:
+            sys.stdout.write("\r" + " " * 48 + "\r")  # clear progress line
+            sys.stdout.flush()
+
+    debug_log(
+        action="subprocess",
+        detail=(
+            f"httpx finished — {len(probed)} live"
+            + (" (wall-timeout, partial)" if timed_out.is_set() else "")
+        ),
+        config=config,
+    )
     return probed
 
 
@@ -711,7 +769,7 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    raw = run_httpx(fqdns, binary, threads, timeout, ports, config)
+    raw = run_httpx(fqdns, binary, threads, timeout, ports, config, quiet=quiet)
     probed = parse_httpx_output(raw)
     base["probed"] = probed
     url_total = len(probed)
