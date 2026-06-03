@@ -1062,6 +1062,11 @@ def run(target: Target, config: dict[str, Any]) -> dict[str, Any]:
         crit = _critical_findings_list(methods_out, cors)
         base["critical_findings"] = crit
         base["findings"] = crit
+        # Populate normalized *_findings keys so SESSION COMPLETE / HTML tier
+        # counters match the risk_summary tiers (ModuleResult contract).
+        base["high_findings"] = list(risk_summary.get("HIGH") or [])
+        base["medium_findings"] = list(risk_summary.get("MEDIUM") or [])
+        base["low_findings"] = list(risk_summary.get("LOW") or [])
 
         # --- Terminal output ---
         if not quiet:
